@@ -31,11 +31,12 @@ from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask)
-from transformers.modeling_utils import PreTrainedModel
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast,
                                            SequenceClassifierOutputWithPast)
-from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+from transformers.modeling_utils import PreTrainedModel
+from transformers.pytorch_utils import (ALL_LAYERNORM_LAYERS,
+                                        is_torch_greater_or_equal_than_1_13)
 from transformers.utils import (add_start_docstrings,
                                 add_start_docstrings_to_model_forward,
                                 is_flash_attn_2_available,
@@ -700,119 +701,505 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 
 class DeepseekV3Attention(nn.Module):
-    """GQA Attention module with QK-norm, following the Qwen3 GQA pattern."""
+    """
+    Multi-headed attention with GQA (Grouped-Query Attention) architecture.
 
-    def __init__(self, config: DeepseekV3Config, layer_idx: int):
+    Aligned with Megatron's implementation:
+    - Q/K/V projections are separate but equivalent to linear_qkv: [8704, 7168]
+      = Q[8192, 7168] + K[256, 7168] + V[256, 7168]
+      where 8192 = num_heads(64) * head_dim(128), 256 = num_kv_heads(2) * head_dim(128)
+    - linear_proj: [7168, 8192] = [hidden_size, num_heads * head_dim]
+    - q_layernorm/k_layernorm operate on head_dim (kv_channels=128)
+    - head_dim = kv_channels = 128 for all Q/K/V
+    - RoPE is applied to the full Q/K head_dim
+
+    Args:
+        config: DeepseekV3Config
+        layer_idx: Optional layer index for cache management
+    """
+
+    def __init__(self,
+                 config: DeepseekV3Config,
+                 layer_idx: Optional[int] = None):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
+        if layer_idx is None:
+            logger.warning_once(
+                f"Instantiating {self.__class__.__name__} without passing 'layer_idx' is not recommended."
+            )
+
+        self.attention_dropout = config.attention_dropout
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.num_query_groups = config.num_query_groups
-        self.head_dim = config.kv_channels
-        self.num_key_value_groups = self.num_heads // self.num_query_groups
-        self.scaling = self.head_dim ** -0.5
-        self.attention_dropout = config.attention_dropout
-        self.is_causal = True
 
+        # Validate head configuration
         if self.num_heads % self.num_query_groups != 0:
             raise ValueError(
                 f'num_attention_heads ({self.num_heads}) must be divisible by '
                 f'num_query_groups ({self.num_query_groups})')
 
-        # Q projection: all heads
-        self.q_proj = nn.Linear(
-            config.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias
-        )
-        # K/V projections: only num_query_groups for GQA
-        self.k_proj = nn.Linear(
-            config.hidden_size, self.num_query_groups * self.head_dim, bias=config.attention_bias
-        )
-        self.v_proj = nn.Linear(
-            config.hidden_size, self.num_query_groups * self.head_dim, bias=config.attention_bias
-        )
+        # GQA dimensions: head_dim = kv_channels = 128
+        self.head_dim = config.kv_channels
+        self.kv_channels = config.kv_channels
+        self.num_key_value_groups = self.num_heads // self.num_query_groups
+
+        self.max_position_embeddings = config.max_position_embeddings
+        self.rope_theta = config.rope_theta
+        self.is_causal = True
+
+        # Q projection: [in=hidden_size, out=num_heads * head_dim] = [7168, 8192]
+        # Weight shape: [8192, 7168] - maps to Q part of Megatron's linear_qkv [8704, 7168]
+        self.q_proj = nn.Linear(self.hidden_size,
+                                self.num_heads * self.head_dim,
+                                bias=config.attention_bias)
+
+        # K projection: [in=hidden_size, out=num_kv_heads * head_dim] = [7168, 256]
+        # Weight shape: [256, 7168] - maps to K part of Megatron's linear_qkv
+        self.k_proj = nn.Linear(self.hidden_size,
+                                self.num_query_groups * self.head_dim,
+                                bias=config.attention_bias)
+
+        # V projection: [in=hidden_size, out=num_kv_heads * head_dim] = [7168, 256]
+        # Weight shape: [256, 7168] - maps to V part of Megatron's linear_qkv
+        self.v_proj = nn.Linear(self.hidden_size,
+                                self.num_query_groups * self.head_dim,
+                                bias=config.attention_bias)
+
+        # O projection: [in=num_heads * head_dim, out=hidden_size] = [8192, 7168]
+        # Weight shape: [7168, 8192] - matches Megatron linear_proj [7168, 8192]
         self.o_proj = nn.Linear(
-            self.num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
+            self.num_heads * self.head_dim,
+            self.hidden_size,
+            bias=config.attention_bias,
         )
 
-        # QK layernorm (RMSNorm on head_dim), matches Megatron's q_layernorm/k_layernorm naming
-        self.q_layernorm = DeepseekV3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_layernorm = DeepseekV3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        # GQA: q_layernorm/k_layernorm on head_dim (kv_channels=128)
+        if getattr(config, 'qk_layernorm', False):
+            self.q_layernorm = DeepseekV3LayerNorm(self.head_dim,
+                                                   eps=config.rms_norm_eps)
+            self.k_layernorm = DeepseekV3LayerNorm(self.head_dim,
+                                                   eps=config.rms_norm_eps)
+        else:
+            self.q_layernorm = None
+            self.k_layernorm = None
+
+        self._init_rope()
+
+        # Softmax scale based on head_dim (128)
+        self.softmax_scale = self.head_dim**(-0.5)
+        if self.config.rope_scaling is not None:
+            mscale_all_dim = self.config.rope_scaling.get('mscale_all_dim', 0)
+            scaling_factor = self.config.rope_scaling['factor']
+            if mscale_all_dim:
+                mscale = yarn_get_mscale(scaling_factor, mscale_all_dim)
+                self.softmax_scale = self.softmax_scale * mscale * mscale
+
+    def _init_rope(self):
+        if self.config.rope_scaling is None:
+            self.rotary_emb = DeepseekV3RotaryEmbedding(
+                self.head_dim,
+                max_position_embeddings=self.max_position_embeddings,
+                base=self.rope_theta,
+            )
+        else:
+            scaling_type = self.config.rope_scaling['type']
+            scaling_factor = self.config.rope_scaling['factor']
+            if scaling_type == 'linear':
+                self.rotary_emb = DeepseekV3LinearScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                    base=self.rope_theta,
+                )
+            elif scaling_type == 'dynamic':
+                self.rotary_emb = DeepseekV3DynamicNTKScalingRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                    base=self.rope_theta,
+                )
+            elif scaling_type == 'yarn':
+                kwargs = {
+                    key: self.config.rope_scaling[key]
+                    for key in [
+                        'original_max_position_embeddings',
+                        'beta_fast',
+                        'beta_slow',
+                        'mscale',
+                        'mscale_all_dim',
+                    ] if key in self.config.rope_scaling
+                }
+                self.rotary_emb = DeepseekV3YarnRotaryEmbedding(
+                    self.head_dim,
+                    max_position_embeddings=self.max_position_embeddings,
+                    scaling_factor=scaling_factor,
+                    base=self.rope_theta,
+                    **kwargs,
+                )
+            else:
+                raise ValueError(f'Unknown RoPE scaling type {scaling_type}')
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        past_key_value: Optional[Cache] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, -1, self.head_dim)
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor],
+               Optional[Tuple[torch.Tensor]]]:
+        if 'padding_mask' in kwargs:
+            warnings.warn(
+                "Passing 'padding_mask' is deprecated and will be removed in v4.37."
+            )
+        bsz, q_len, _ = hidden_states.size()
 
-        # Project and reshape: Q uses all heads, K/V use num_query_groups (GQA)
-        query_states = self.q_proj(hidden_states).view(hidden_shape)
-        key_states = self.k_proj(hidden_states).view(hidden_shape)
-        value_states = self.v_proj(hidden_states).view(hidden_shape)
+        # GQA: Q/K/V all use head_dim = kv_channels = 128
+        # Q: [b, s, 7168] -> [b, s, 8192] -> [b, s, 64, 128]
+        query_states = self.q_proj(hidden_states).view(bsz, q_len,
+                                                       self.num_heads,
+                                                       self.head_dim)
 
-        # Apply QK layernorm before transpose
-        query_states = self.q_layernorm(query_states)
-        key_states = self.k_layernorm(key_states)
+        # K: [b, s, 7168] -> [b, s, 256] -> [b, s, 2, 128]
+        key_states = self.k_proj(hidden_states).view(bsz, q_len,
+                                                     self.num_query_groups,
+                                                     self.head_dim)
 
-        # Transpose to [batch, num_heads, seq_len, head_dim]
+        # V: [b, s, 7168] -> [b, s, 256] -> [b, s, 2, 128]
+        value_states = self.v_proj(hidden_states).view(bsz, q_len,
+                                                       self.num_query_groups,
+                                                       self.head_dim)
+
+        # Apply q_layernorm and k_layernorm on head_dim
+        if self.q_layernorm is not None:
+            query_states = self.q_layernorm(query_states)
+        if self.k_layernorm is not None:
+            key_states = self.k_layernorm(key_states)
+
+        # Transpose for attention: [b, heads, s, head_dim]
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
 
-        # Apply rotary position embeddings
-        if position_embeddings is not None:
-            cos, sin = position_embeddings
-            query_states, key_states = apply_rotary_pos_emb(
-                query_states, key_states, cos, sin, position_ids
-            )
+        kv_seq_len = value_states.shape[-2]
+        if past_key_value is not None:
+            if self.layer_idx is None:
+                raise ValueError('layer_idx must be provided for KV caching.')
+            if hasattr(past_key_value, 'get_usable_length'):
+                kv_seq_len += past_key_value.get_usable_length(
+                    kv_seq_len, self.layer_idx)
+            else:
+                kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
+
+        # Apply RoPE to full Q/K (head_dim=128)
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin, position_ids)
 
         # Update KV cache
         if past_key_value is not None:
+            cache_kwargs = {'sin': sin, 'cos': cos}
             key_states, value_states = past_key_value.update(
-                key_states, value_states, self.layer_idx
-            )
+                key_states, value_states, self.layer_idx, cache_kwargs)
 
-        # GQA: repeat KV heads to match Q heads
+        # Repeat K/V for GQA: [b, 2, s, 128] -> [b, 64, s, 128]
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # Compute attention weights
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
+        # Attention computation: Q[b,64,s,128] @ K^T[b,64,s,128] -> [b,64,s,s]
+        attn_weights = torch.matmul(query_states, key_states.transpose(
+            2, 3)) * self.softmax_scale
 
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
 
-        # Upcast attention to fp32 for numerical stability
-        attn_weights = nn.functional.softmax(
-            attn_weights, dim=-1, dtype=torch.float32
-        ).to(query_states.dtype)
-        attn_weights = nn.functional.dropout(
-            attn_weights,
-            p=self.attention_dropout if self.training else 0.0,
-            training=self.training,
-        )
+        attn_weights = nn.functional.softmax(attn_weights,
+                                             dim=-1,
+                                             dtype=torch.float32).to(
+                                                 query_states.dtype)
+        attn_weights = nn.functional.dropout(attn_weights,
+                                             p=self.attention_dropout,
+                                             training=self.training)
+
+        # Attention output: [b, 64, s, 128]
         attn_output = torch.matmul(attn_weights, value_states)
 
+        # Reshape and project: [b, s, 8192] -> [b, s, 7168]
         attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(*input_shape, -1)
+        attn_output = attn_output.reshape(bsz, q_len,
+                                          self.num_heads * self.head_dim)
         attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
             attn_weights = None
 
-        return attn_output, attn_weights
+        return attn_output, attn_weights, past_key_value
+
+
+class DeepseekV3FlashAttention2(DeepseekV3Attention):
+    """
+    Flash Attention 2 implementation with GQA support.
+
+    Aligned with Megatron's dimensions:
+    - Q/K/V all use head_dim=kv_channels=128
+    - Output projects from [b, s, 64, 128] -> [b, s, 8192] -> [b, s, 7168]
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._flash_attn_uses_top_left_mask = not is_flash_attn_greater_or_equal_2_10(
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Cache] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor],
+               Optional[Tuple[torch.Tensor]]]:
+        if 'padding_mask' in kwargs:
+            warnings.warn("Passing 'padding_mask' is deprecated.")
+            attention_mask = kwargs.pop('padding_mask')
+
+        if getattr(self.config, 'fa_without_pad', False):
+            attention_mask = None
+
+        output_attentions = False
+        bsz, q_len, _ = hidden_states.size()
+
+        # GQA: Q/K/V all use head_dim = 128
+        query_states = self.q_proj(hidden_states).view(bsz, q_len,
+                                                       self.num_heads,
+                                                       self.head_dim)
+        key_states = self.k_proj(hidden_states).view(bsz, q_len,
+                                                     self.num_query_groups,
+                                                     self.head_dim)
+        value_states = self.v_proj(hidden_states).view(bsz, q_len,
+                                                       self.num_query_groups,
+                                                       self.head_dim)
+
+        # Apply layernorm on head_dim
+        if self.q_layernorm is not None:
+            query_states = self.q_layernorm(query_states)
+        if self.k_layernorm is not None:
+            key_states = self.k_layernorm(key_states)
+
+        kv_seq_len = value_states.shape[1]
+        if past_key_value is not None:
+            if hasattr(past_key_value, 'get_usable_length'):
+                kv_seq_len += past_key_value.get_usable_length(
+                    kv_seq_len, self.layer_idx)
+            else:
+                kv_seq_len += past_key_value.get_seq_length(self.layer_idx)
+
+        # Apply RoPE to full Q/K (head_dim=128)
+        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        # Transpose to [b, heads, s, head_dim] for RoPE
+        query_states_for_rope = query_states.transpose(1, 2)
+        key_states_for_rope = key_states.transpose(1, 2)
+        query_states_for_rope, key_states_for_rope = apply_rotary_pos_emb(
+            query_states_for_rope, key_states_for_rope, cos, sin, position_ids)
+        # Transpose back to [b, s, heads, head_dim]
+        query_states = query_states_for_rope.transpose(1, 2)
+        key_states = key_states_for_rope.transpose(1, 2)
+
+        # Update KV cache
+        if past_key_value is not None:
+            key_states_cache = key_states.transpose(1, 2)
+            value_states_cache = value_states.transpose(1, 2)
+            cache_kwargs = {'sin': sin, 'cos': cos}
+            key_states_cache, value_states_cache = past_key_value.update(
+                key_states_cache, value_states_cache, self.layer_idx,
+                cache_kwargs)
+            key_states = key_states_cache.transpose(1, 2)
+            value_states = value_states_cache.transpose(1, 2)
+
+        dropout_rate = self.attention_dropout if self.training else 0.0
+
+        # Handle dtype for flash attention
+        input_dtype = query_states.dtype
+        if input_dtype == torch.float32:
+            if hasattr(self.config, '_pre_quantization_dtype'):
+                target_dtype = self.config._pre_quantization_dtype
+            elif torch.is_autocast_enabled():
+                target_dtype = torch.get_autocast_gpu_dtype()
+            else:
+                target_dtype = self.q_proj.weight.dtype
+
+            logger.warning_once(
+                'The input hidden states seems to be silently casted in float32, this might be related to'
+                ' the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in'
+                f' {target_dtype}.')
+
+            query_states = query_states.to(target_dtype)
+            key_states = key_states.to(target_dtype)
+            value_states = value_states.to(target_dtype)
+
+        # Flash Attention forward
+        attn_output = self._flash_attention_forward(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            q_len,
+            dropout=dropout_rate,
+            softmax_scale=self.softmax_scale,
+        )
+
+        # Reshape: [b, s, 64, 128] -> [b, s, 8192] -> [b, s, 7168]
+        attn_output = attn_output.reshape(bsz, q_len, self.num_heads *
+                                          self.head_dim).contiguous()
+        attn_output = self.o_proj(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+
+        return attn_output, attn_weights, past_key_value
+
+    def _flash_attention_forward(
+        self,
+        query_states,
+        key_states,
+        value_states,
+        attention_mask,
+        query_length,
+        dropout=0.0,
+        softmax_scale=None,
+    ):
+        """
+        Calls the forward method of Flash Attention with GQA support.
+
+        All tensors have head_dim=128 (kv_channels).
+
+        Args:
+            query_states: [b, s, num_heads, 128]
+            key_states: [b, s, num_kv_heads, 128]
+            value_states: [b, s, num_kv_heads, 128]
+            attention_mask: padding mask
+            query_length: sequence length
+            dropout: dropout rate
+            softmax_scale: scale factor for QK^T
+        """
+        if not self._flash_attn_uses_top_left_mask:
+            causal = self.is_causal
+        else:
+            causal = self.is_causal and query_length != 1
+
+        # Repeat K/V for GQA before flash attention
+        if self.num_query_groups > 1:
+            batch_size, seq_len, num_kv_heads, head_dim = key_states.shape
+            n_rep = self.num_key_value_groups
+            # [b, s, 2, 128] -> [b, s, 64, 128]
+            key_states = key_states[:, :, :, None, :].expand(
+                batch_size, seq_len, num_kv_heads, n_rep,
+                head_dim).reshape(batch_size, seq_len, num_kv_heads * n_rep,
+                                  head_dim)
+            value_states = value_states[:, :, :, None, :].expand(
+                batch_size, seq_len, num_kv_heads, n_rep,
+                head_dim).reshape(batch_size, seq_len, num_kv_heads * n_rep,
+                                  head_dim)
+
+        if attention_mask is not None:
+            batch_size = query_states.shape[0]
+            (
+                query_states,
+                key_states,
+                value_states,
+                indices_q,
+                cu_seq_lens,
+                max_seq_lens,
+            ) = self._upad_input(query_states, key_states, value_states,
+                                 attention_mask, query_length)
+
+            cu_seqlens_q, cu_seqlens_k = cu_seq_lens
+            max_seqlen_in_batch_q, max_seqlen_in_batch_k = max_seq_lens
+
+            attn_output_unpad = flash_attn_varlen_func(
+                query_states,
+                key_states,
+                value_states,
+                cu_seqlens_q=cu_seqlens_q,
+                cu_seqlens_k=cu_seqlens_k,
+                max_seqlen_q=max_seqlen_in_batch_q,
+                max_seqlen_k=max_seqlen_in_batch_k,
+                dropout_p=dropout,
+                softmax_scale=softmax_scale,
+                causal=causal,
+            )
+
+            attn_output = pad_input(attn_output_unpad, indices_q, batch_size,
+                                    query_length)
+        else:
+            attn_output = flash_attn_func(
+                query_states,
+                key_states,
+                value_states,
+                dropout,
+                softmax_scale=softmax_scale,
+                causal=causal,
+            )
+
+        return attn_output
+
+    def _upad_input(self, query_layer, key_layer, value_layer, attention_mask,
+                    query_length):
+        indices_k, cu_seqlens_k, max_seqlen_in_batch_k = _get_unpad_data(
+            attention_mask)
+        batch_size, kv_seq_len, num_query_groups, head_dim = key_layer.shape
+
+        key_layer = index_first_axis(
+            key_layer.reshape(batch_size * kv_seq_len, num_query_groups,
+                              head_dim),
+            indices_k,
+        )
+        value_layer = index_first_axis(
+            value_layer.reshape(batch_size * kv_seq_len, num_query_groups,
+                                head_dim),
+            indices_k,
+        )
+        if query_length == kv_seq_len:
+            query_layer = index_first_axis(
+                query_layer.reshape(batch_size * kv_seq_len,
+                                    self.num_query_groups, head_dim),
+                indices_k,
+            )
+            cu_seqlens_q = cu_seqlens_k
+            max_seqlen_in_batch_q = max_seqlen_in_batch_k
+            indices_q = indices_k
+        elif query_length == 1:
+            max_seqlen_in_batch_q = 1
+            cu_seqlens_q = torch.arange(
+                batch_size + 1, dtype=torch.int32, device=query_layer.device
+            )  # There is a memcpy here, that is very bad.
+            indices_q = cu_seqlens_q[:-1]
+            query_layer = query_layer.squeeze(1)
+        else:
+            # The -q_len: slice assumes left padding.
+            attention_mask = attention_mask[:, -query_length:]
+            query_layer, indices_q, cu_seqlens_q, max_seqlen_in_batch_q = unpad_input(
+                query_layer, attention_mask)
+
+        return (
+            query_layer,
+            key_layer,
+            value_layer,
+            indices_q,
+            (cu_seqlens_q, cu_seqlens_k),
+            (max_seqlen_in_batch_q, max_seqlen_in_batch_k),
+        )
 
 
 ATTENTION_CLASSES = {
     'eager': DeepseekV3Attention,
+    'flash_attention_2': DeepseekV3FlashAttention2,
 }
 
 
@@ -821,7 +1208,8 @@ class DeepseekV3DecoderLayer(nn.Module):
     def __init__(self, config: DeepseekV3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = DeepseekV3Attention(config=config, layer_idx=layer_idx)
+        self.self_attn = ATTENTION_CLASSES[config._attn_implementation](
+            config=config, layer_idx=layer_idx)
 
         self.mlp = (DeepseekV3MoE(config) if
                     (config.n_routed_experts is not None
@@ -841,7 +1229,6 @@ class DeepseekV3DecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor,
                                                  torch.FloatTensor]]]:
@@ -868,13 +1255,13 @@ class DeepseekV3DecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights = self.self_attn(
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
+            output_attentions=output_attentions,
             use_cache=use_cache,
-            position_embeddings=position_embeddings,
             **kwargs,
         )
         hidden_states = residual + hidden_states
@@ -1041,43 +1428,12 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
             for layer_idx in range(config.num_hidden_layers)
         ])
         self._use_flash_attention_2 = config._attn_implementation == 'flash_attention_2'
-        self.rotary_emb = self._create_rope_embedding(config)
         self.norm = DeepseekV3RMSNorm(config.hidden_size,
                                       eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
         self.post_init()
-
-    @staticmethod
-    def _create_rope_embedding(config):
-        """Create the appropriate rotary embedding based on config."""
-        head_dim = config.kv_channels
-        rope_scaling = getattr(config, 'rope_scaling', None)
-        if rope_scaling is not None:
-            rope_type = rope_scaling.get('type', 'default')
-        else:
-            rope_type = 'default'
-
-        if rope_type == 'yarn':
-            return DeepseekV3YarnRotaryEmbedding(
-                dim=head_dim,
-                max_position_embeddings=config.max_position_embeddings,
-                base=config.rope_theta,
-                scaling_factor=rope_scaling.get('factor', 1.0),
-                original_max_position_embeddings=rope_scaling.get(
-                    'original_max_position_embeddings', 4096),
-                beta_fast=rope_scaling.get('beta_fast', 32),
-                beta_slow=rope_scaling.get('beta_slow', 1),
-                mscale=rope_scaling.get('mscale', 1),
-                mscale_all_dim=rope_scaling.get('mscale_all_dim', 0),
-            )
-        else:
-            return DeepseekV3RotaryEmbedding(
-                dim=head_dim,
-                max_position_embeddings=config.max_position_embeddings,
-                base=config.rope_theta,
-            )
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1163,11 +1519,6 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
                 past_key_values_length,
             )
 
-        # Compute rotary position embeddings
-        seq_len = seq_length + past_key_values_length
-        cos, sin = self.rotary_emb(inputs_embeds, seq_len=seq_len)
-        position_embeddings = (cos, sin)
-
         # embed positions
         hidden_states = inputs_embeds
 
@@ -1188,7 +1539,6 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
                 past_key_value=past_key_values,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
-                position_embeddings=position_embeddings,
             )
 
             hidden_states = layer_outputs[0]
