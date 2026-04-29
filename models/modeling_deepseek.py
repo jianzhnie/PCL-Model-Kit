@@ -711,6 +711,13 @@ class DeepseekV3Attention(nn.Module):
         self.head_dim = config.kv_channels
         self.num_key_value_groups = self.num_heads // self.num_query_groups
         self.scaling = self.head_dim ** -0.5
+        # YaRN mscale: scale attention logits when using yarn RoPE with mscale_all_dim > 0
+        if config.rope_scaling is not None and config.rope_scaling.get('mscale_all_dim', 0) > 0:
+            mscale = yarn_get_mscale(
+                config.rope_scaling['factor'],
+                config.rope_scaling['mscale_all_dim'],
+            )
+            self.scaling = self.scaling * mscale * mscale
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
