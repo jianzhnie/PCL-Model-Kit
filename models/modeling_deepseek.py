@@ -578,7 +578,6 @@ class DeepseekV3MoE(nn.Module):
         orig_shape = hidden_states.shape
         topk_idx, topk_weight, aux_loss = self.gate(hidden_states)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-        flat_topk_idx = topk_idx.view(-1)
         if self.training:
             if self.ep_size != 1:
                 raise NotImplementedError(
@@ -873,6 +872,7 @@ class DeepseekV3DecoderLayer(nn.Module):
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
+            output_attentions=output_attentions,
             use_cache=use_cache,
             position_embeddings=position_embeddings,
             **kwargs,
@@ -897,7 +897,7 @@ class DeepseekV3DecoderLayer(nn.Module):
             outputs += (self_attn_weights, )
 
         if use_cache:
-            outputs += (present_key_value, )
+            outputs += (past_key_value, )
 
         if aux_loss is not None:
             outputs += (aux_loss, )
