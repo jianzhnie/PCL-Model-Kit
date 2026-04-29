@@ -484,8 +484,8 @@ class MoEGate(nn.Module):
                 bsz * seq_len, self.n_group,
                 self.n_routed_experts // self.n_group).reshape(
                     bsz * seq_len, -1))  # [n, e]
-            tmp_scores = scores_for_choice.masked_fill(~score_mask.bool(),
-                                                       0.0)  # [n, e]
+            tmp_scores = scores_for_choice.masked_fill(
+                ~score_mask.bool(), float('-inf'))  # [n, e]
             _, topk_idx = torch.topk(tmp_scores,
                                      k=self.top_k,
                                      dim=-1,
