@@ -29,18 +29,19 @@ from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.modeling_attn_mask_utils import (
-    _prepare_4d_causal_attention_mask)
-from transformers.modeling_utils import PreTrainedModel
+from transformers.modeling_attn_mask_utils import \
+    _prepare_4d_causal_attention_mask
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast,
                                            SequenceClassifierOutputWithPast)
+from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 from transformers.utils import (add_start_docstrings,
                                 add_start_docstrings_to_model_forward,
                                 is_flash_attn_2_available,
                                 is_flash_attn_greater_or_equal_2_10, logging,
                                 replace_return_docstrings)
+
 from .configuration_deepseek import DeepseekV3Config
 
 if is_flash_attn_2_available():
@@ -485,8 +486,8 @@ class MoEGate(nn.Module):
                 bsz * seq_len, self.n_group,
                 self.n_routed_experts // self.n_group).reshape(
                     bsz * seq_len, -1))  # [n, e]
-            tmp_scores = scores_for_choice.masked_fill(
-                ~score_mask.bool(), float('-inf'))  # [n, e]
+            tmp_scores = scores_for_choice.masked_fill(~score_mask.bool(),
+                                                       float('-inf'))  # [n, e]
             _, topk_idx = torch.topk(tmp_scores,
                                      k=self.top_k,
                                      dim=-1,
@@ -711,9 +712,10 @@ class DeepseekV3Attention(nn.Module):
         self.num_query_groups = config.num_query_groups
         self.head_dim = config.kv_channels
         self.num_key_value_groups = self.num_heads // self.num_query_groups
-        self.scaling = self.head_dim ** -0.5
+        self.scaling = self.head_dim**-0.5
         # YaRN mscale: scale attention logits when using yarn RoPE with mscale_all_dim > 0
-        if config.rope_scaling is not None and config.rope_scaling.get('mscale_all_dim', 0) > 0:
+        if config.rope_scaling is not None and config.rope_scaling.get(
+                'mscale_all_dim', 0) > 0:
             mscale = yarn_get_mscale(
                 config.rope_scaling['factor'],
                 config.rope_scaling['mscale_all_dim'],
@@ -728,23 +730,25 @@ class DeepseekV3Attention(nn.Module):
                 f'num_query_groups ({self.num_query_groups})')
 
         # Q projection: all heads
-        self.q_proj = nn.Linear(
-            config.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias
-        )
+        self.q_proj = nn.Linear(config.hidden_size,
+                                self.num_heads * self.head_dim,
+                                bias=config.attention_bias)
         # K/V projections: only num_query_groups for GQA
-        self.k_proj = nn.Linear(
-            config.hidden_size, self.num_query_groups * self.head_dim, bias=config.attention_bias
-        )
-        self.v_proj = nn.Linear(
-            config.hidden_size, self.num_query_groups * self.head_dim, bias=config.attention_bias
-        )
-        self.o_proj = nn.Linear(
-            self.num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
-        )
+        self.k_proj = nn.Linear(config.hidden_size,
+                                self.num_query_groups * self.head_dim,
+                                bias=config.attention_bias)
+        self.v_proj = nn.Linear(config.hidden_size,
+                                self.num_query_groups * self.head_dim,
+                                bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim,
+                                config.hidden_size,
+                                bias=config.attention_bias)
 
         # QK layernorm (LayerNorm without bias on head_dim), matches Megatron's q_layernorm/k_layernorm
-        self.q_layernorm = DeepseekV3LayerNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_layernorm = DeepseekV3LayerNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.q_layernorm = DeepseekV3LayerNorm(self.head_dim,
+                                               eps=config.rms_norm_eps)
+        self.k_layernorm = DeepseekV3LayerNorm(self.head_dim,
+                                               eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -754,7 +758,8 @@ class DeepseekV3Attention(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor,
+                                            torch.Tensor]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
@@ -778,29 +783,29 @@ class DeepseekV3Attention(nn.Module):
         if position_embeddings is not None:
             cos, sin = position_embeddings
             query_states, key_states = apply_rotary_pos_emb(
-                query_states, key_states, cos, sin, position_ids
-            )
+                query_states, key_states, cos, sin, position_ids)
 
         # Update KV cache
         if past_key_value is not None:
             key_states, value_states = past_key_value.update(
-                key_states, value_states, self.layer_idx
-            )
+                key_states, value_states, self.layer_idx)
 
         # GQA: repeat KV heads to match Q heads
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         # Compute attention weights
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
+        attn_weights = torch.matmul(query_states, key_states.transpose(
+            2, 3)) * self.scaling
 
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
 
         # Upcast attention to fp32 for numerical stability
-        attn_weights = nn.functional.softmax(
-            attn_weights, dim=-1, dtype=torch.float32
-        ).to(query_states.dtype)
+        attn_weights = nn.functional.softmax(attn_weights,
+                                             dim=-1,
+                                             dtype=torch.float32).to(
+                                                 query_states.dtype)
         attn_weights = nn.functional.dropout(
             attn_weights,
             p=self.attention_dropout if self.training else 0.0,
@@ -828,7 +833,8 @@ class DeepseekV3DecoderLayer(nn.Module):
     def __init__(self, config: DeepseekV3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = DeepseekV3Attention(config=config, layer_idx=layer_idx)
+        self.self_attn = DeepseekV3Attention(config=config,
+                                             layer_idx=layer_idx)
 
         self.mlp = (DeepseekV3MoE(config) if
                     (config.n_routed_experts is not None
