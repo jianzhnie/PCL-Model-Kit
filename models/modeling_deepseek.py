@@ -34,6 +34,7 @@ from transformers.modeling_attn_mask_utils import \
 from transformers.modeling_outputs import (BaseModelOutputWithPast,
                                            CausalLMOutputWithPast,
                                            SequenceClassifierOutputWithPast)
+from transformers.generation.utils import GenerationMixin
 from transformers.modeling_utils import PreTrainedModel
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 from transformers.utils import (add_start_docstrings,
@@ -820,7 +821,7 @@ class DeepseekV3Attention(nn.Module):
         if not output_attentions:
             attn_weights = None
 
-        return attn_output, attn_weights
+        return attn_output, attn_weights, past_key_value
 
 
 ATTENTION_CLASSES = {
@@ -881,7 +882,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights = self.self_attn(
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -911,7 +912,7 @@ class DeepseekV3DecoderLayer(nn.Module):
             outputs += (self_attn_weights, )
 
         if use_cache:
-            outputs += (past_key_value, )
+            outputs += (present_key_value, )
 
         if aux_loss is not None:
             outputs += (aux_loss, )
@@ -1228,8 +1229,11 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
 
         next_cache = None
         if use_cache:
-            next_cache = (next_decoder_cache.to_legacy_cache()
-                          if use_legacy_cache else next_decoder_cache)
+            if use_legacy_cache and hasattr(next_decoder_cache,
+                                            'to_legacy_cache'):
+                next_cache = next_decoder_cache.to_legacy_cache()
+            else:
+                next_cache = next_decoder_cache
 
         aux_loss = sum(all_aux_loss) if all_aux_loss else None
 
@@ -1250,7 +1254,7 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
         return output
 
 
-class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
+class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ['lm_head.weight']
 
     def __init__(self, config):
@@ -1393,11 +1397,16 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel):
                 if hasattr(past_key_values, 'get_max_length'):
                     max_cache_length = past_key_values.get_max_length()
                 else:
-                    max_cache_shape = past_key_values.get_max_cache_shape()
-                    if max_cache_shape is not None:
-                        max_cache_length = (max_cache_shape[1]
-                                            if len(max_cache_shape) > 1 else
-                                            max_cache_shape[0])
+                    if hasattr(past_key_values,
+                               'get_max_cache_shape'):
+                        max_cache_shape = past_key_values.get_max_cache_shape()
+                        if max_cache_shape is not None:
+                            if isinstance(max_cache_shape, int):
+                                max_cache_length = max_cache_shape
+                            elif len(max_cache_shape) > 1:
+                                max_cache_length = max_cache_shape[1]
+                            else:
+                                max_cache_length = max_cache_shape[0]
             else:
                 cache_length = past_length = past_key_values[0][0].shape[2]
                 max_cache_length = None
