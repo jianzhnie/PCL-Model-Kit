@@ -1,30 +1,132 @@
 """
 Numerical alignment test: DeepseekV3Attention (eager) vs DeepseekV3FlashAttention.
 
-Verifies that both implementations produce identical outputs for:
-  1. Prefill without padding
-  2. Prefill with padding (varlen path)
-  3. Decode with KV cache
+Uses CPU with mocked NPU flash attention operators to verify data flow correctness.
+On Ascend NPU hardware, replace mocks with real torch_npu ops.
 
-Run on a machine with CUDA and flash_attn installed:
+Run:
     python -m tests.test_flash_attn_alignment
 """
+import math
 import sys
 import os
+
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+# ---------------------------------------------------------------------------
+# CPU mock for NPU flash attention operators (BSND / TND layouts with GQA)
+# ---------------------------------------------------------------------------
+
+
+def _mock_npu_flash_attn_func(q, k, v, dropout_p=0.0, softmax_scale=None,
+                              causal=False):
+    """Mock npu_flash_attn_func: BSND layout [B,S,H,D], GQA supported."""
+    B, Sq, H_q, D = q.shape
+    Skv = k.shape[1]
+    H_kv = k.shape[2]
+    n_rep = H_q // H_kv
+
+    if softmax_scale is None:
+        softmax_scale = D ** -0.5
+
+    # GQA: expand KV heads
+    if n_rep > 1:
+        k = (k[:, :, :, None, :]
+             .expand(B, Skv, H_kv, n_rep, D)
+             .reshape(B, Skv, H_q, D))
+        v = (v[:, :, :, None, :]
+             .expand(B, Skv, H_kv, n_rep, D)
+             .reshape(B, Skv, H_q, D))
+
+    # Transpose to [B, H, S, D]
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
+
+    attn = torch.matmul(q, k.transpose(-2, -1)) * softmax_scale
+    if causal:
+        # Bottom-right aligned causal mask (handles Sq != Skv)
+        mask = torch.ones(Sq, Skv, device=q.device, dtype=torch.bool)
+        mask = torch.tril(mask, diagonal=Skv - Sq)
+        attn = attn.masked_fill(~mask, float('-inf'))
+
+    attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(q.dtype)
+    out = torch.matmul(attn, v)
+    return out.transpose(1, 2)  # [B, Sq, H, D]
+
+
+def _mock_npu_flash_attn_varlen_func(
+        q, k, v, cu_seqlens_q, cu_seqlens_k,
+        max_seqlen_q=None, max_seqlen_k=None,
+        dropout_p=0.0, softmax_scale=None, causal=False):
+    """Mock npu_flash_attn_varlen_func: TND layout [T,H,D], GQA supported."""
+    H_q = q.shape[1]
+    H_kv = k.shape[1]
+    D = q.shape[2]
+    n_rep = H_q // H_kv
+
+    if softmax_scale is None:
+        softmax_scale = D ** -0.5
+
+    output_parts = []
+    for i in range(len(cu_seqlens_q) - 1):
+        q_s, q_e = cu_seqlens_q[i].item(), cu_seqlens_q[i + 1].item()
+        kv_s, kv_e = cu_seqlens_k[i].item(), cu_seqlens_k[i + 1].item()
+
+        qi = q[q_s:q_e]    # [Sq, H_q, D]
+        ki = k[kv_s:kv_e]  # [Skv, H_kv, D]
+        vi = v[kv_s:kv_e]
+
+        Sq = qi.shape[0]
+        Skv = ki.shape[0]
+
+        if n_rep > 1:
+            ki = (ki[:, :, None, :]
+                  .expand(Skv, H_kv, n_rep, D)
+                  .reshape(Skv, H_q, D))
+            vi = (vi[:, :, None, :]
+                  .expand(Skv, H_kv, n_rep, D)
+                  .reshape(Skv, H_q, D))
+
+        qi = qi.transpose(0, 1)  # [H, Sq, D]
+        ki = ki.transpose(0, 1)
+        vi = vi.transpose(0, 1)
+
+        attn = torch.matmul(qi, ki.transpose(-2, -1)) * softmax_scale
+        if causal:
+            mask = torch.ones(Sq, Skv, device=q.device, dtype=torch.bool)
+            mask = torch.tril(mask, diagonal=Skv - Sq)
+            attn = attn.masked_fill(~mask, float('-inf'))
+
+        attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(q.dtype)
+        out = torch.matmul(attn, vi)          # [H, Sq, D]
+        output_parts.append(out.transpose(0, 1))  # [Sq, H_q, D]
+
+    return torch.cat(output_parts, dim=0)
+
+
+# ---------------------------------------------------------------------------
+# Patch NPU operators with CPU mocks, then import model
+# ---------------------------------------------------------------------------
+import models.modeling_deepseek as _mdl
+
+_mdl.npu_flash_attn_func = _mock_npu_flash_attn_func
+_mdl.npu_flash_attn_varlen_func = _mock_npu_flash_attn_varlen_func
 
 from models.modeling_deepseek import (
     DeepseekV3Attention,
     DeepseekV3FlashAttention,
-    DeepseekV3RMSNorm,
-    apply_rotary_pos_emb,
     _get_unpad_data,
 )
 from models.configuration_deepseek import DeepseekV3Config
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def make_config(**overrides):
     defaults = dict(
@@ -38,243 +140,182 @@ def make_config(**overrides):
         rope_scaling=None,
         max_position_embeddings=512,
         rope_theta=10000.0,
-        # MoE fields (not used by attention, but required by config)
         n_routed_experts=None,
     )
     defaults.update(overrides)
     return DeepseekV3Config(**defaults)
 
 
-def copy_weights(eager: DeepseekV3Attention, flash: DeepseekV3FlashAttention):
-    """Copy all weights from eager to flash attention module."""
+def copy_weights(eager, flash):
     flash.load_state_dict(eager.state_dict(), strict=True)
+
+
+def build_rope(seq_len, dim, device="cpu", dtype=torch.float32):
+    inv_freq = 1.0 / (10000.0
+                       ** (torch.arange(0, dim, 2, device=device) / dim))
+    t = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+    freqs = torch.outer(t, inv_freq)
+    emb = torch.cat((freqs, freqs), dim=-1)
+    return emb.cos().to(dtype), emb.sin().to(dtype)
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
 
 @torch.no_grad()
 def test_prefill_no_padding():
-    """Test 1: Prefill without padding — standard flash_attn_func path."""
+    """Standard path: no padding — npu_flash_attn_func path."""
     config = make_config()
-    layer_idx = 0
-    eager = DeepseekV3Attention(config, layer_idx).cuda().eval()
-    flash = DeepseekV3FlashAttention(config, layer_idx).cuda().eval()
+    eager = DeepseekV3Attention(config, 0).eval()
+    flash = DeepseekV3FlashAttention(config, 0).eval()
     copy_weights(eager, flash)
 
     bsz, seq_len = 2, 64
-    hidden = torch.randn(bsz, seq_len, config.hidden_size, device="cuda", dtype=torch.float16)
-    position_ids = torch.arange(seq_len, device="cuda").unsqueeze(0).expand(bsz, -1)
+    hidden = torch.randn(bsz, seq_len, config.hidden_size)
+    position_ids = torch.arange(seq_len).unsqueeze(0).expand(bsz, -1)
+    cos, sin = build_rope(seq_len, config.kv_channels)
 
-    # Build RoPE cos/sin (simplified — just use a basic rotary embedding)
-    dim = config.kv_channels
-    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, dim, 2, device="cuda").float() / dim))
-    t = torch.arange(seq_len, device="cuda", dtype=inv_freq.dtype)
-    freqs = torch.outer(t, inv_freq)
-    emb = torch.cat((freqs, freqs), dim=-1)
-    cos, sin = emb.cos().to(torch.float16), emb.sin().to(torch.float16)
-
-    # Eager: needs 4D causal mask
     from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
     causal_mask = _prepare_4d_causal_attention_mask(
-        None, (bsz, seq_len), hidden, 0,
-    )
+        None, (bsz, seq_len), hidden, 0)
 
-    eager_out, _, _ = eager(
-        hidden,
-        attention_mask=causal_mask,
-        position_ids=position_ids,
-        position_embeddings=(cos, sin),
-    )
-
-    # Flash: attention_mask=None (no padding), causal handled by kernel
-    flash_out, _, _ = flash(
-        hidden,
-        attention_mask=None,
-        position_ids=position_ids,
-        position_embeddings=(cos, sin),
-    )
+    eager_out, _, _ = eager(hidden, attention_mask=causal_mask,
+                            position_ids=position_ids,
+                            position_embeddings=(cos, sin))
+    flash_out, _, _ = flash(hidden, attention_mask=None,
+                            position_ids=position_ids,
+                            position_embeddings=(cos, sin))
 
     max_diff = (eager_out - flash_out).abs().max().item()
-    mean_diff = (eager_out - flash_out).abs().mean().item()
-    passed = torch.allclose(eager_out, flash_out, atol=1e-2, rtol=1e-2)
-    print(f"[Prefill no-padding]  max_diff={max_diff:.6f}  mean_diff={mean_diff:.6f}  passed={passed}")
+    passed = torch.allclose(eager_out, flash_out, atol=1e-5, rtol=1e-5)
+    print(f"[Prefill no-padding]  max_diff={max_diff:.2e}  passed={passed}")
     return passed
 
 
 @torch.no_grad()
 def test_prefill_with_padding():
-    """Test 2: Prefill with right-padded sequences — varlen path."""
+    """Varlen path: right-padded sequences — npu_flash_attn_varlen_func."""
     config = make_config()
-    layer_idx = 0
-    eager = DeepseekV3Attention(config, layer_idx).cuda().eval()
-    flash = DeepseekV3FlashAttention(config, layer_idx).cuda().eval()
+    eager = DeepseekV3Attention(config, 0).eval()
+    flash = DeepseekV3FlashAttention(config, 0).eval()
     copy_weights(eager, flash)
 
     bsz, seq_len = 4, 32
-    hidden = torch.randn(bsz, seq_len, config.hidden_size, device="cuda", dtype=torch.float16)
-    position_ids = torch.arange(seq_len, device="cuda").unsqueeze(0).expand(bsz, -1)
+    hidden = torch.randn(bsz, seq_len, config.hidden_size)
+    position_ids = torch.arange(seq_len).unsqueeze(0).expand(bsz, -1)
 
-    # Create attention mask: right-padded sequences of different lengths
-    attention_mask = torch.ones(bsz, seq_len, device="cuda", dtype=torch.long)
-    attention_mask[0, 20:] = 0  # sequence 0 has 20 valid tokens
-    attention_mask[1, 28:] = 0  # sequence 1 has 28 valid tokens
-    attention_mask[2, 15:] = 0  # sequence 2 has 15 valid tokens
-    # sequence 3 is fully valid (32 tokens)
+    attention_mask = torch.ones(bsz, seq_len, dtype=torch.long)
+    attention_mask[0, 20:] = 0
+    attention_mask[1, 28:] = 0
+    attention_mask[2, 15:] = 0
 
-    # Build RoPE
-    dim = config.kv_channels
-    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, dim, 2, device="cuda").float() / dim))
-    t = torch.arange(seq_len, device="cuda", dtype=inv_freq.dtype)
-    freqs = torch.outer(t, inv_freq)
-    emb = torch.cat((freqs, freqs), dim=-1)
-    cos_cached = emb.cos().to(torch.float16)
-    sin_cached = emb.sin().to(torch.float16)
+    cos, sin = build_rope(seq_len, config.kv_channels)
 
-    # Eager: 4D causal + padding mask
     from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
     causal_mask = _prepare_4d_causal_attention_mask(
-        attention_mask, (bsz, seq_len), hidden, 0,
-    )
-    eager_out, _, _ = eager(
-        hidden,
-        attention_mask=causal_mask,
-        position_ids=position_ids,
-        position_embeddings=(cos_cached, sin_cached),
-    )
+        attention_mask, (bsz, seq_len), hidden, 0)
 
-    # Flash: 2D mask with 0s → varlen path
-    flash_out, _, _ = flash(
-        hidden,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        position_embeddings=(cos_cached, sin_cached),
-    )
+    eager_out, _, _ = eager(hidden, attention_mask=causal_mask,
+                            position_ids=position_ids,
+                            position_embeddings=(cos, sin))
+    flash_out, _, _ = flash(hidden, attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            position_embeddings=(cos, sin))
 
-    # Compare only at valid (non-padded) positions
-    valid_mask = attention_mask.bool().unsqueeze(-1).expand_as(eager_out)
-    eager_valid = eager_out[valid_mask]
-    flash_valid = flash_out[valid_mask]
+    # Compare only valid (non-padded) positions
+    valid = attention_mask.bool().unsqueeze(-1).expand_as(eager_out)
+    eager_valid = eager_out[valid]
+    flash_valid = flash_out[valid]
 
     max_diff = (eager_valid - flash_valid).abs().max().item()
-    mean_diff = (eager_valid - flash_valid).abs().mean().item()
-    passed = torch.allclose(eager_valid, flash_valid, atol=1e-2, rtol=1e-2)
-    print(f"[Prefill w/ padding]  max_diff={max_diff:.6f}  mean_diff={mean_diff:.6f}  passed={passed}")
+    passed = torch.allclose(eager_valid, flash_valid, atol=1e-5, rtol=1e-5)
+    print(f"[Prefill w/ padding]  max_diff={max_diff:.2e}  passed={passed}")
     return passed
 
 
 @torch.no_grad()
 def test_decode_with_cache():
-    """Test 3: Decode step with KV cache — single token query."""
+    """Decode step: single-token query with KV cache."""
     config = make_config()
-    layer_idx = 0
-    eager = DeepseekV3Attention(config, layer_idx).cuda().eval()
-    flash = DeepseekV3FlashAttention(config, layer_idx).cuda().eval()
+    eager = DeepseekV3Attention(config, 0).eval()
+    flash = DeepseekV3FlashAttention(config, 0).eval()
     copy_weights(eager, flash)
 
-    bsz = 2
-    prefill_len = 16
-    decode_len = 1
-
+    bsz, prefill_len, decode_len = 2, 16, 1
     dim = config.kv_channels
-    inv_freq = 1.0 / (10000.0 ** (torch.arange(0, dim, 2, device="cuda").float() / dim))
 
     from transformers.cache_utils import DynamicCache
 
     # --- Prefill both ---
-    hidden_prefill = torch.randn(bsz, prefill_len, config.hidden_size, device="cuda", dtype=torch.float16)
-    pos_prefill = torch.arange(prefill_len, device="cuda").unsqueeze(0).expand(bsz, -1)
-    t = torch.arange(prefill_len, device="cuda", dtype=inv_freq.dtype)
-    freqs = torch.outer(t, inv_freq)
-    emb = torch.cat((freqs, freqs), dim=-1)
-    cos_pf, sin_pf = emb.cos().to(torch.float16), emb.sin().to(torch.float16)
+    hidden_pf = torch.randn(bsz, prefill_len, config.hidden_size)
+    pos_pf = torch.arange(prefill_len).unsqueeze(0).expand(bsz, -1)
+    cos_pf, sin_pf = build_rope(prefill_len, dim)
 
     eager_cache = DynamicCache()
     flash_cache = DynamicCache()
 
     _, _, eager_cache = eager(
-        hidden_prefill,
-        attention_mask=None,
-        position_ids=pos_prefill,
-        past_key_value=eager_cache,
-        use_cache=True,
-        position_embeddings=(cos_pf, sin_pf),
-    )
+        hidden_pf, attention_mask=None, position_ids=pos_pf,
+        past_key_value=eager_cache, use_cache=True,
+        position_embeddings=(cos_pf, sin_pf))
     _, _, flash_cache = flash(
-        hidden_prefill,
-        attention_mask=None,
-        position_ids=pos_prefill,
-        past_key_value=flash_cache,
-        use_cache=True,
-        position_embeddings=(cos_pf, sin_pf),
-    )
+        hidden_pf, attention_mask=None, position_ids=pos_pf,
+        past_key_value=flash_cache, use_cache=True,
+        position_embeddings=(cos_pf, sin_pf))
 
     # --- Decode step ---
-    hidden_decode = torch.randn(bsz, decode_len, config.hidden_size, device="cuda", dtype=torch.float16)
-    pos_decode = torch.tensor([[prefill_len]], device="cuda").expand(bsz, -1)
+    hidden_dec = torch.randn(bsz, decode_len, config.hidden_size)
+    pos_dec = torch.tensor([[prefill_len]]).expand(bsz, -1)
     total_len = prefill_len + decode_len
-    t2 = torch.arange(total_len, device="cuda", dtype=inv_freq.dtype)
-    freqs2 = torch.outer(t2, inv_freq)
-    emb2 = torch.cat((freqs2, freqs2), dim=-1)
-    cos_dec, sin_dec = emb2.cos().to(torch.float16), emb2.sin().to(torch.float16)
+    cos_dec, sin_dec = build_rope(total_len, dim)
 
-    # Eager decode
     from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
     causal_mask = _prepare_4d_causal_attention_mask(
-        None, (bsz, decode_len), hidden_decode, prefill_len,
-    )
-    eager_out, _, _ = eager(
-        hidden_decode,
-        attention_mask=causal_mask,
-        position_ids=pos_decode,
-        past_key_value=eager_cache,
-        position_embeddings=(cos_dec, sin_dec),
-    )
+        None, (bsz, decode_len), hidden_dec, prefill_len)
 
-    # Flash decode
+    eager_out, _, _ = eager(
+        hidden_dec, attention_mask=causal_mask, position_ids=pos_dec,
+        past_key_value=eager_cache,
+        position_embeddings=(cos_dec, sin_dec))
     flash_out, _, _ = flash(
-        hidden_decode,
-        attention_mask=None,
-        position_ids=pos_decode,
+        hidden_dec, attention_mask=None, position_ids=pos_dec,
         past_key_value=flash_cache,
-        position_embeddings=(cos_dec, sin_dec),
-    )
+        position_embeddings=(cos_dec, sin_dec))
 
     max_diff = (eager_out - flash_out).abs().max().item()
-    mean_diff = (eager_out - flash_out).abs().mean().item()
-    passed = torch.allclose(eager_out, flash_out, atol=1e-2, rtol=1e-2)
-    print(f"[Decode w/ cache]     max_diff={max_diff:.6f}  mean_diff={mean_diff:.6f}  passed={passed}")
+    passed = torch.allclose(eager_out, flash_out, atol=1e-5, rtol=1e-5)
+    print(f"[Decode w/ cache]     max_diff={max_diff:.2e}  passed={passed}")
     return passed
 
 
 @torch.no_grad()
 def test_different_gqa_ratios():
-    """Test 4: Various GQA head ratios."""
+    """Various GQA head ratios: (num_heads, num_kv_groups)."""
+    ratios = [(8, 2), (8, 4), (16, 2), (16, 4), (16, 8)]
     results = []
-    for num_heads, kv_groups in [(8, 2), (8, 4), (16, 2), (16, 4), (16, 8)]:
+
+    for num_heads, kv_groups in ratios:
         config = make_config(
             num_attention_heads=num_heads,
             num_query_groups=kv_groups,
             kv_channels=64,
             hidden_size=num_heads * 64,
         )
-        layer_idx = 0
-        eager = DeepseekV3Attention(config, layer_idx).cuda().eval()
-        flash = DeepseekV3FlashAttention(config, layer_idx).cuda().eval()
+        eager = DeepseekV3Attention(config, 0).eval()
+        flash = DeepseekV3FlashAttention(config, 0).eval()
         copy_weights(eager, flash)
 
         bsz, seq_len = 2, 32
-        hidden = torch.randn(bsz, seq_len, config.hidden_size, device="cuda", dtype=torch.float16)
-        position_ids = torch.arange(seq_len, device="cuda").unsqueeze(0).expand(bsz, -1)
-
-        dim = config.kv_channels
-        inv_freq = 1.0 / (10000.0 ** (torch.arange(0, dim, 2, device="cuda").float() / dim))
-        t = torch.arange(seq_len, device="cuda", dtype=inv_freq.dtype)
-        freqs = torch.outer(t, inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos, sin = emb.cos().to(torch.float16), emb.sin().to(torch.float16)
+        hidden = torch.randn(bsz, seq_len, config.hidden_size)
+        position_ids = torch.arange(seq_len).unsqueeze(0).expand(bsz, -1)
+        cos, sin = build_rope(seq_len, config.kv_channels)
 
         from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
         causal_mask = _prepare_4d_causal_attention_mask(
-            None, (bsz, seq_len), hidden, 0,
-        )
+            None, (bsz, seq_len), hidden, 0)
+
         eager_out, _, _ = eager(hidden, attention_mask=causal_mask,
                                 position_ids=position_ids,
                                 position_embeddings=(cos, sin))
@@ -283,25 +324,26 @@ def test_different_gqa_ratios():
                                 position_embeddings=(cos, sin))
 
         max_diff = (eager_out - flash_out).abs().max().item()
-        passed = torch.allclose(eager_out, flash_out, atol=1e-2, rtol=1e-2)
-        results.append((num_heads, kv_groups, max_diff, passed))
-        print(f"  GQA {num_heads}/{kv_groups}: max_diff={max_diff:.6f}  passed={passed}")
+        passed = torch.allclose(eager_out, flash_out, atol=1e-5, rtol=1e-5)
+        results.append(passed)
+        print(f"  GQA {num_heads:>2}/{kv_groups}: "
+              f"max_diff={max_diff:.2e}  passed={passed}")
 
-    all_passed = all(r[3] for r in results)
+    all_passed = all(results)
     print(f"[GQA ratios]          all_passed={all_passed}")
     return all_passed
 
 
 def main():
     print("=" * 60)
-    print("DeepseekV3 Flash Attention Alignment Test")
+    print("DeepseekV3 Flash Attention Alignment Test (CPU mock)")
     print("=" * 60)
-    results = []
-    results.append(test_prefill_no_padding())
-    results.append(test_prefill_with_padding())
-    results.append(test_decode_with_cache())
-    results.append(test_different_gqa_ratios())
-
+    results = [
+        test_prefill_no_padding(),
+        test_prefill_with_padding(),
+        test_decode_with_cache(),
+        test_different_gqa_ratios(),
+    ]
     print("=" * 60)
     if all(results):
         print("ALL TESTS PASSED")
