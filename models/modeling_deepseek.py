@@ -109,6 +109,7 @@ class DeepseekV3LayerNorm(nn.Module):
 
 
 ALL_LAYERNORM_LAYERS.append(DeepseekV3RMSNorm)
+ALL_LAYERNORM_LAYERS.append(DeepseekV3LayerNorm)
 
 
 class DeepseekV3RotaryEmbedding(nn.Module):
@@ -741,9 +742,9 @@ class DeepseekV3Attention(nn.Module):
             self.num_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
 
-        # QK layernorm (RMSNorm on head_dim), matches Megatron's q_layernorm/k_layernorm naming
-        self.q_layernorm = DeepseekV3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_layernorm = DeepseekV3RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        # QK layernorm (LayerNorm without bias on head_dim), matches Megatron's q_layernorm/k_layernorm
+        self.q_layernorm = DeepseekV3LayerNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_layernorm = DeepseekV3LayerNorm(self.head_dim, eps=config.rms_norm_eps)
 
     def forward(
         self,
