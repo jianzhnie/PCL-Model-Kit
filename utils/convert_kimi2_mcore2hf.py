@@ -50,8 +50,12 @@ VOCAB_SIZE = 163840
 NUM_LAYERS = 32
 
 
-def _mp_prefix(tp_rank: int, pp_rank: int, ep_rank: int,
-               tp_size: int, pp_size: int, ep_size: int,
+def _mp_prefix(tp_rank: int,
+               pp_rank: int,
+               ep_rank: int,
+               tp_size: int,
+               pp_size: int,
+               ep_size: int,
                moe_tp_extend_ep: bool = False) -> str:
     """Generate Megatron checkpoint directory prefix.
 
@@ -1073,8 +1077,8 @@ class MgCkptConvert(object):
                     mg_weights = {}
                     for tp_rank, ep_rank in product(self.tp_rank_list,
                                                     self.ep_rank_list):
-                        mg_weights[(tp_rank, ep_rank)] = raw_data[
-                            (tp_rank, ep_rank)].pop(f'model{vpp_rank}')
+                        mg_weights[(tp_rank, ep_rank)] = raw_data[(
+                            tp_rank, ep_rank)].pop(f'model{vpp_rank}')
                     self.read_vpp_rank_weights(pp_rank, vpp_rank, mg_weights)
                     del mg_weights
 

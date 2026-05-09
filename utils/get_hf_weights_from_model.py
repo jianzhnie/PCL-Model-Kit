@@ -23,7 +23,9 @@ def main():
         description='Extract weight info from model definition (meta device)')
     parser.add_argument('--config', type=str, help='Path to config.json')
     parser.add_argument('--output', '-o', type=str, default='weight_map.json')
-    parser.add_argument('--dtype', type=str, default='bfloat16',
+    parser.add_argument('--dtype',
+                        type=str,
+                        default='bfloat16',
                         choices=list(DTYPE_BYTES))
     parser.add_argument('--pretty', action='store_true')
     args = parser.parse_args()
@@ -43,11 +45,13 @@ def main():
     config.ep_size = 1
 
     print('Config:')
-    for k in ['vocab_size', 'hidden_size', 'num_hidden_layers',
-               'num_attention_heads', 'num_query_groups', 'intermediate_size',
-               'moe_intermediate_size', 'n_routed_experts', 'n_shared_experts',
-               'first_k_dense_replace', 'moe_layer_freq', 'kv_channels']:
-        print(f'  {k}: {getattr(config, k, "N/A")}')
+    for k in [
+            'vocab_size', 'hidden_size', 'num_hidden_layers',
+            'num_attention_heads', 'num_query_groups', 'intermediate_size',
+            'moe_intermediate_size', 'n_routed_experts', 'n_shared_experts',
+            'first_k_dense_replace', 'moe_layer_freq', 'kv_channels'
+    ]:
+        print(f'  {k}: {getattr(config, k, 'N/A')}')
 
     # Instantiate on meta device (zero memory allocation)
     with torch.device('meta'):
@@ -80,7 +84,8 @@ def main():
     with open(output, 'w') as f:
         json.dump(result, f, indent=2 if args.pretty else None)
 
-    print(f'\nWeights: {len(weight_map)}, Size: {total_size / (1024**3):.2f} GB')
+    print(
+        f'\nWeights: {len(weight_map)}, Size: {total_size / (1024**3):.2f} GB')
     print(f'Saved to: {output}')
 
     # Show example weights
@@ -99,7 +104,7 @@ def main():
     print('\nExample weights:')
     for name in examples:
         if name in weight_map:
-            print(f'  {name}: {weight_map[name]["shape"]}')
+            print(f'  {name}: {weight_map[name]['shape']}')
 
 
 if __name__ == '__main__':

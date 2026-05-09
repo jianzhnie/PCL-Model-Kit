@@ -15,10 +15,16 @@ from pathlib import Path
 
 # safetensors dtype → (name, bytes_per_element)
 DTYPE_MAP = {
-    'F32':  ('float32',  4), 'F16':  ('float16',  2), 'BF16':  ('bfloat16', 2),
-    'F64':  ('float64',  8), 'I64':  ('int64',    8), 'I32':   ('int32',    4),
-    'I16':  ('int16',    2), 'I8':   ('int8',     1), 'U8':    ('uint8',    1),
-    'BOOL': ('bool',     1),
+    'F32': ('float32', 4),
+    'F16': ('float16', 2),
+    'BF16': ('bfloat16', 2),
+    'F64': ('float64', 8),
+    'I64': ('int64', 8),
+    'I32': ('int32', 4),
+    'I16': ('int16', 2),
+    'I8': ('int8', 1),
+    'U8': ('uint8', 1),
+    'BOOL': ('bool', 1),
 }
 
 
@@ -53,9 +59,13 @@ def find_shard_files(model_path: Path) -> list[Path]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Extract weight info from safetensors')
+    parser = argparse.ArgumentParser(
+        description='Extract weight info from safetensors')
     parser.add_argument('model_path', help='Directory or .safetensors file')
-    parser.add_argument('-o', '--output', default='weight_map.json', help='Output JSON')
+    parser.add_argument('-o',
+                        '--output',
+                        default='weight_map.json',
+                        help='Output JSON')
     parser.add_argument('--pretty', action='store_true')
     args = parser.parse_args()
 
@@ -76,7 +86,8 @@ def main():
                 continue
             shape = meta.get('shape', [])
             dtype_raw = meta.get('dtype', 'F32').upper()
-            dtype_name, elem_bytes = DTYPE_MAP.get(dtype_raw, (dtype_raw.lower(), 4))
+            dtype_name, elem_bytes = DTYPE_MAP.get(dtype_raw,
+                                                   (dtype_raw.lower(), 4))
             numel = 1
             for d in shape:
                 numel *= d
@@ -84,7 +95,9 @@ def main():
             weight_map[name] = {'shape': shape, 'dtype': dtype_name}
 
     result = {
-        'metadata': {'total_size': total_size},
+        'metadata': {
+            'total_size': total_size
+        },
         'weight_map': weight_map,
     }
 
@@ -98,7 +111,7 @@ def main():
 
     # Show first 10 weights
     for name, info in list(weight_map.items())[:10]:
-        print(f'  {name}: {info["shape"]} ({info["dtype"]})')
+        print(f'  {name}: {info['shape']} ({info['dtype']})')
     if len(weight_map) > 10:
         print(f'  ... and {len(weight_map) - 10} more')
 

@@ -26,9 +26,9 @@ MCore 权重完全对齐对比工具
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
-import os
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
@@ -36,21 +36,16 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from get_mcore_weights_from_ckpt import (
-    CheckpointCache,
-    CheckpointLoader,
-    MoeParallelStrategy,
-    ParallelConfig,
-    LayerMapperFactory,
-    _resolve_iter_dir,
-    _peek_checkpoint_keys,
-    _torch_load_compat,
-)
-
+from get_mcore_weights_from_ckpt import (CheckpointCache, CheckpointLoader,
+                                         LayerMapperFactory,
+                                         MoeParallelStrategy, ParallelConfig,
+                                         _peek_checkpoint_keys,
+                                         _resolve_iter_dir, _torch_load_compat)
 
 # ---------------------------------------------------------------------------
 # Tensor Merging
 # ---------------------------------------------------------------------------
+
 
 def _merge_tensor(
     name: str,
@@ -62,7 +57,8 @@ def _merge_tensor(
     is_ep = strategy.is_ep_sharded(name)
     tp_dim = strategy.get_tp_parallel_dim(name)
 
-    def _cat_along(tensors: List[torch.Tensor], dim: Optional[int]) -> torch.Tensor:
+    def _cat_along(tensors: List[torch.Tensor],
+                   dim: Optional[int]) -> torch.Tensor:
         if len(tensors) <= 1:
             return tensors[0]
         if dim is not None:
@@ -71,7 +67,8 @@ def _merge_tensor(
 
     if is_ep:
         # 先按 EP 分组，组内合并 TP，再跨 EP 合并
-        ep_groups: Dict[int, List[Tuple[int, torch.Tensor]]] = defaultdict(list)
+        ep_groups: Dict[int, List[Tuple[int,
+                                        torch.Tensor]]] = defaultdict(list)
         for (tp, ep), t in tp_ep_tensors.items():
             ep_groups[ep].append((tp, t))
 
@@ -99,9 +96,9 @@ def _merge_tensor(
 # Layer Index Conversion
 # ---------------------------------------------------------------------------
 
-def _global_layer_name(
-    name: str, pp_rank: int, vpp_rank, loc2layer, num_layers: int, pp_size: int
-) -> str:
+
+def _global_layer_name(name: str, pp_rank: int, vpp_rank, loc2layer,
+                       num_layers: int, pp_size: int) -> str:
     """将 local layer index 转换为 global index。"""
     m = re.match(r'((?:decoder\.|model\.)?layers\.)(\d+)(.*)', name)
     if not m:
@@ -123,6 +120,7 @@ def _global_layer_name(
 # Load & Merge
 # ---------------------------------------------------------------------------
 
+
 def load_merged_state(
     ckpt_dir: str,
     tp: int,
@@ -136,8 +134,11 @@ def load_merged_state(
     """加载 MCore checkpoint 并合并为完整的 state dict。"""
 
     parallel = ParallelConfig(
-        tp_size=tp, pp_size=pp, ep_size=ep,
-        schedules_method=schedules_method, vpp_stage=vpp_stage,
+        tp_size=tp,
+        pp_size=pp,
+        ep_size=ep,
+        schedules_method=schedules_method,
+        vpp_stage=vpp_stage,
     )
     strategy = MoeParallelStrategy()
 
@@ -158,7 +159,8 @@ def load_merged_state(
         if parallel.dualpipe:
             parallel.vpp_stage = max(1, num_layers // (pp * 2))
         elif parallel.vpp_size > 1:
-            parallel.vpp_stage = max(1, (num_layers // pp) // parallel.vpp_size)
+            parallel.vpp_stage = max(1,
+                                     (num_layers // pp) // parallel.vpp_size)
         else:
             parallel.vpp_stage = max(1, num_layers // pp)
 
@@ -185,14 +187,14 @@ def load_merged_state(
         wt: Dict[str, Dict[Tuple[int, int], torch.Tensor]] = defaultdict(dict)
         for (tp_r, ep_r), state in models.items():
             for name, tensor in state.items():
-                if isinstance(tensor, torch.Tensor) and '_extra_state' not in name:
+                if isinstance(tensor,
+                              torch.Tensor) and '_extra_state' not in name:
                     wt[name][(tp_r, ep_r)] = tensor
 
         # Merge each weight
         for name, tp_ep_t in wt.items():
-            gname = _global_layer_name(
-                name, pp_rank, vpp_rank, loc2layer, num_layers, pp
-            )
+            gname = _global_layer_name(name, pp_rank, vpp_rank, loc2layer,
+                                       num_layers, pp)
             if not (gname.startswith('module.') or gname.startswith('model.')):
                 gname = f'module.{gname}'
             if gname in merged:
@@ -232,6 +234,7 @@ def _detect_vpp(loader, parallel, tp, pp):
 # ---------------------------------------------------------------------------
 # Comparison
 # ---------------------------------------------------------------------------
+
 
 def compare_states(
     state_a: Dict[str, torch.Tensor],
@@ -292,19 +295,42 @@ def compare_states(
 
     # ---- Report ----
     _print_report(
-        label_a, label_b, state_a, state_b, keys_a, keys_b, common,
-        only_a, only_b, shape_mismatch, val_mismatch,
-        match_n, exact_n, atol,
+        label_a,
+        label_b,
+        state_a,
+        state_b,
+        keys_a,
+        keys_b,
+        common,
+        only_a,
+        only_b,
+        shape_mismatch,
+        val_mismatch,
+        match_n,
+        exact_n,
+        atol,
     )
 
-    total_issues = len(only_a) + len(only_b) + len(shape_mismatch) + len(val_mismatch)
+    total_issues = len(only_a) + len(only_b) + len(shape_mismatch) + len(
+        val_mismatch)
     return total_issues == 0
 
 
 def _print_report(
-    label_a, label_b, state_a, state_b, keys_a, keys_b, common,
-    only_a, only_b, shape_mismatch, val_mismatch,
-    match_n, exact_n, atol,
+    label_a,
+    label_b,
+    state_a,
+    state_b,
+    keys_a,
+    keys_b,
+    common,
+    only_a,
+    only_b,
+    shape_mismatch,
+    val_mismatch,
+    match_n,
+    exact_n,
+    atol,
 ):
     sep = '=' * 70
     print(f'\n{sep}')
@@ -335,11 +361,13 @@ def _print_report(
 
     if val_mismatch:
         # 按 max_diff 降序排列（用副本，不修改原始数据）
-        sorted_mismatch = sorted(val_mismatch, key=lambda x: x['max_diff'], reverse=True)
+        sorted_mismatch = sorted(val_mismatch,
+                                 key=lambda x: x['max_diff'],
+                                 reverse=True)
         print(f'\n数值不一致 ({len(val_mismatch)}):')
         for item in sorted_mismatch[:50]:
-            print(f'  {item["key"]}: max_diff={item["max_diff"]:.2e}, '
-                  f'mean_diff={item["mean_diff"]:.2e}, shape={item["shape"]}')
+            print(f'  {item['key']}: max_diff={item['max_diff']:.2e}, '
+                  f'mean_diff={item['mean_diff']:.2e}, shape={item['shape']}')
         if len(val_mismatch) > 50:
             print(f'  ... 还有 {len(val_mismatch) - 50} 个')
 
@@ -349,15 +377,16 @@ def _print_report(
           f'Shape 不匹配: {len(shape_mismatch)}, '
           f'仅{label_a}: {len(only_a)}, 仅{label_b}: {len(only_b)}')
 
-    ok = (len(only_a) == 0 and len(only_b) == 0
-          and len(shape_mismatch) == 0 and len(val_mismatch) == 0)
-    print(f'\n{"完全一致!" if ok else "存在差异"}')
+    ok = (len(only_a) == 0 and len(only_b) == 0 and len(shape_mismatch) == 0
+          and len(val_mismatch) == 0)
+    print(f'\n{'完全一致!' if ok else '存在差异'}')
     print(sep)
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main():
     p = argparse.ArgumentParser(
@@ -383,7 +412,9 @@ def main():
 
     g3 = p.add_argument_group('模型配置')
     g3.add_argument('--num-layers', type=int, default=32)
-    g3.add_argument('--schedules-method', type=str, default=None,
+    g3.add_argument('--schedules-method',
+                    type=str,
+                    default=None,
                     help='调度方法 (如 dualpipev)')
     g3.add_argument('--vpp-stage', type=int, default=None)
     g3.add_argument('--io-threads', type=int, default=4)
@@ -403,21 +434,25 @@ def main():
     )
 
     print(f'加载 A: {args.dir_a}')
-    print(f'  并行: TP={cfg_a["tp"]}, PP={cfg_a["pp"]}, EP={cfg_a["ep"]}')
+    print(f'  并行: TP={cfg_a['tp']}, PP={cfg_a['pp']}, EP={cfg_a['ep']}')
     state_a = load_merged_state(
-        args.dir_a, num_layers=args.num_layers,
+        args.dir_a,
+        num_layers=args.num_layers,
         schedules_method=args.schedules_method,
-        vpp_stage=args.vpp_stage, io_threads=args.io_threads,
+        vpp_stage=args.vpp_stage,
+        io_threads=args.io_threads,
         **cfg_a,
     )
     print(f'  合并后权重数: {len(state_a)}')
 
     print(f'\n加载 B: {args.dir_b}')
-    print(f'  并行: TP={cfg_b["tp"]}, PP={cfg_b["pp"]}, EP={cfg_b["ep"]}')
+    print(f'  并行: TP={cfg_b['tp']}, PP={cfg_b['pp']}, EP={cfg_b['ep']}')
     state_b = load_merged_state(
-        args.dir_b, num_layers=args.num_layers,
+        args.dir_b,
+        num_layers=args.num_layers,
         schedules_method=args.schedules_method,
-        vpp_stage=args.vpp_stage, io_threads=args.io_threads,
+        vpp_stage=args.vpp_stage,
+        io_threads=args.io_threads,
         **cfg_b,
     )
     print(f'  合并后权重数: {len(state_b)}')
