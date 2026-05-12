@@ -87,6 +87,13 @@ def parse_copy_source(raw: str | None, num_original: int) -> list[int]:
     # Single integer → all new layers copy from that source
     try:
         single = int(raw)
+        if single < 0 or single >= num_original:
+            print(
+                f"ERROR: --copy_source {single} is out of range "
+                f"[0, {num_original - 1}].",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         return [single] * num_original
     except ValueError:
         pass
@@ -116,6 +123,36 @@ def parse_copy_source(raw: str | None, num_original: int) -> list[int]:
             )
             sys.exit(1)
     return result
+
+
+def validate_layer_layout(index: dict, original_layers: int) -> list[int]:
+    """Validate that the source model has contiguous layer indices [0, original_layers)."""
+    actual_layers = sorted(
+        {
+            li
+            for param_name in index["weight_map"]
+            if (li := get_layer_index(param_name)) is not None
+        }
+    )
+    if not actual_layers:
+        print(
+            "ERROR: No transformer layer parameters matching 'model.layers.<idx>.' "
+            "were found in the index.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    expected_layers = list(range(original_layers))
+    if actual_layers != expected_layers:
+        print(
+            f"ERROR: Detected layer indices {actual_layers[:8]}"
+            f"{'...' if len(actual_layers) > 8 else ''}, but expected contiguous "
+            f"indices 0-{original_layers - 1}. Refusing to expand a model with "
+            "missing, extra, or already-expanded layers.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return actual_layers
 
 
 def build_reverse_map(source_list: list[int], num_original: int) -> dict[int, list[int]]:
@@ -241,26 +278,8 @@ def main():
     shard_files = sorted(set(index["weight_map"].values()))
 
     # ── Validate layer count against the actual model ────────────────────
-    actual_layers = set()
-    for param_name in index["weight_map"]:
-        li = get_layer_index(param_name)
-        if li is not None:
-            actual_layers.add(li)
-    actual_max = max(actual_layers) if actual_layers else -1
-    actual_count = len(actual_layers)
-
-    if actual_max >= original_layers:
-        print(f"ERROR: Model already has layers up to index {actual_max}. "
-              f"Either the model was already doubled or --original_layers ({original_layers}) "
-              f"is too low. Refusing to run — this would create overlapping layer indices.",
-              file=sys.stderr)
-        sys.exit(1)
-
-    if actual_count != original_layers:
-        if actual_max + 1 != original_layers:
-            print(f"WARNING: Detected {actual_count} unique layer indices "
-                  f"(max={actual_max}), but --original_layers={original_layers}. "
-                  f"Expected {original_layers} contiguous layers (0-{original_layers - 1}).")
+    actual_layers = validate_layer_layout(index, original_layers)
+    actual_max = actual_layers[-1]
 
     # ── Parse copy source mapping ────────────────────────────────────────
     source_list = parse_copy_source(args.copy_source, original_layers)

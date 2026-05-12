@@ -146,6 +146,20 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         torch.testing.assert_close(all_weights["model.layers.2.input_layernorm.weight"], torch.full((16,), 1.0))
         torch.testing.assert_close(all_weights["model.layers.3.input_layernorm.weight"], torch.full((16,), 0.0))
 
+    def test_double_layers_rejects_out_of_range_copy_source(self):
+        sys.argv = [
+            "double_hf_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--copy_source", "2"
+        ]
+
+        with self.assertRaises(SystemExit) as exc:
+            double_main()
+
+        self.assertEqual(exc.exception.code, 1)
+
     def test_expand_model_layers_shell_script(self):
         script_path = self.project_root / "scripts/expand_model_layers.sh"
         env = os.environ.copy()

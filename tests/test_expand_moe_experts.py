@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import shutil
 import unittest
 from pathlib import Path
@@ -187,6 +189,27 @@ class TestExpandMoeExperts(unittest.TestCase):
             all_weights["model.layers.0.mlp.experts.7.gate_proj.weight"],
             torch.full((32, 16), 3.0),
         )
+
+    def test_expand_moe_experts_shell_script_default_doubles_experts(self):
+        script_path = self.project_root / "scripts/expand_moe_experts.sh"
+        env = os.environ.copy()
+        env["MODEL_DIR"] = str(self.model_dir)
+        env["OUTPUT_DIR"] = str(self.output_dir)
+
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            cwd=self.project_root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["n_routed_experts"], 8)
 
 if __name__ == "__main__":
     unittest.main()

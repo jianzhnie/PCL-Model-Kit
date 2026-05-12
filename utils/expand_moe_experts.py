@@ -94,6 +94,54 @@ def build_expert_target_map(
     return dict(targets)
 
 
+def validate_expert_layout(index: dict, original_experts: int) -> dict[int, list[int]]:
+    """Validate that each MoE layer has contiguous expert indices [0, original_experts)."""
+    experts_by_layer: dict[int, set[int]] = defaultdict(set)
+    for param_name in index["weight_map"]:
+        info = get_expert_info(param_name)
+        if info is None:
+            continue
+        layer_idx, expert_idx, _ = info
+        experts_by_layer[layer_idx].add(expert_idx)
+
+    if not experts_by_layer:
+        print(
+            "ERROR: No expert parameters matching 'model.layers.<idx>.mlp.experts.<idx>.' "
+            "were found in the index.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    expected = list(range(original_experts))
+    validated: dict[int, list[int]] = {}
+    for layer_idx, expert_indices in sorted(experts_by_layer.items()):
+        actual = sorted(expert_indices)
+        if actual != expected:
+            print(
+                f"ERROR: Layer {layer_idx} has expert indices {actual[:8]}"
+                f"{'...' if len(actual) > 8 else ''}, but expected contiguous "
+                f"indices 0-{original_experts - 1}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        validated[layer_idx] = actual
+    return validated
+
+
+def validate_router_shape(param_name: str, shape: list[int], original_experts: int) -> None:
+    """Ensure router tensors expand along the expert dimension."""
+    if not shape:
+        print(f"ERROR: Router tensor {param_name} has an empty shape.", file=sys.stderr)
+        sys.exit(1)
+    if shape[0] != original_experts:
+        print(
+            f"ERROR: Router tensor {param_name} has shape {shape}, expected first "
+            f"dimension to equal original expert count {original_experts}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def tensor_nbytes(tensor: torch.Tensor) -> int:
     """Return the size of a torch tensor in bytes."""
     return tensor.element_size() * tensor.nelement()
@@ -202,7 +250,9 @@ def main():
     print(f"Expanding experts: {original_experts} -> {target_experts} (factor: {expansion_factor})")
 
     shard_files = sorted(set(index["weight_map"].values()))
+    experts_by_layer = validate_expert_layout(index, original_experts)
     source_to_targets = build_expert_target_map(original_experts, target_experts)
+    print(f"Detected {len(experts_by_layer)} MoE layer(s) with {original_experts} experts each")
 
     # ── Update & write config ───────────────────────────────────────────
     updated_keys = []
@@ -243,6 +293,7 @@ def main():
             nbytes = get_nbytes_from_meta(dtype, shape)
 
             if is_router_param(key):
+                validate_router_shape(key, shape, original_experts)
                 new_nbytes = nbytes * expansion_factor
                 if new_nbytes + current_bytes > target_shard_size and current_bytes > 0:
                     num_output_shards += 1
@@ -311,6 +362,7 @@ def main():
                 nbytes = tensor_nbytes(tensor)
 
                 if is_router_param(key):
+                    validate_router_shape(key, list(tensor.shape), original_experts)
                     # Expand router: cat([W, W, ...], dim=0)
                     # For classifier.weight (out_features, in_features)
                     # For e_score_correction_bias (out_features)
