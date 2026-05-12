@@ -30,8 +30,19 @@ DTYPE_SIZES: dict[str, int] = {
     "F16": 2, "BF16": 2, "I16": 2,
     "F8_E4M3": 1, "F8_E5M2": 1,
     "F8_E4M3FN": 1, "F8_E5M2FN": 1,
+    "F8_E4M3FNUZ": 1, "F8_E5M2FNUZ": 1,
     "I8": 1, "U8": 1, "BOOL": 1,
 }
+
+EXPERT_COUNT_KEYS = ["n_routed_experts", "n_experts", "num_experts"]
+ROUTER_WEIGHT_SUFFIXES = (
+    "mlp.router.classifier.weight",
+    "mlp.gate.weight",
+)
+ROUTER_BIAS_SUFFIXES = (
+    "mlp.router.e_score_correction_bias",
+    "mlp.gate.e_score_correction_bias",
+)
 
 
 def load_config(model_dir: Path) -> dict:
@@ -58,8 +69,29 @@ def get_expert_info(param_name: str) -> tuple[int, int, str] | None:
 
 
 def is_router_param(param_name: str) -> bool:
-    """Check if the parameter is a router classifier or bias."""
-    return "mlp.router.classifier.weight" in param_name or "mlp.router.e_score_correction_bias" in param_name
+    """Check if the parameter is a router weight or expert-bias tensor."""
+    return param_name.endswith(ROUTER_WEIGHT_SUFFIXES + ROUTER_BIAS_SUFFIXES)
+
+
+def find_expert_count(config: dict) -> tuple[str | None, int]:
+    """Read the original expert count from known config keys."""
+    for key in EXPERT_COUNT_KEYS:
+        value = config.get(key)
+        if isinstance(value, int) and value > 0:
+            return key, value
+    return None, 0
+
+
+def build_expert_target_map(
+    original_experts: int,
+    target_experts: int,
+) -> dict[int, list[int]]:
+    """Build source expert -> target expert indices for all newly added experts."""
+    targets: dict[int, list[int]] = defaultdict(list)
+    for new_idx in range(original_experts, target_experts):
+        src_idx = new_idx % original_experts
+        targets[src_idx].append(new_idx)
+    return dict(targets)
 
 
 def tensor_nbytes(tensor: torch.Tensor) -> int:
@@ -82,11 +114,34 @@ def read_safetensors_header(path: Path) -> dict[str, tuple[str, list[int]]]:
 
 
 def get_nbytes_from_meta(dtype: str, shape: list[int]) -> int:
-    elem_size = DTYPE_SIZES.get(dtype, 4)  # default 4 if unknown
+    elem_size = DTYPE_SIZES[dtype]  # let KeyError propagate for unknown dtypes
     numel = 1
     for dim in shape:
         numel *= dim
     return elem_size * numel
+
+
+def auto_detect_shard_size(model_dir: Path, shard_files: list[str]) -> int:
+    """Detect a target shard size from the original shard files."""
+    file_sizes = []
+    for fname in shard_files:
+        fpath = model_dir / fname
+        if fpath.exists():
+            file_sizes.append(fpath.stat().st_size)
+
+    if file_sizes:
+        avg_size = int(sum(file_sizes) / len(file_sizes))
+        print(
+            f"Detected shard size from {len(file_sizes)} existing files: "
+            f"{avg_size / 1e9:.2f} GB (average)"
+        )
+        return avg_size
+
+    print(
+        "WARNING: No shard files found on disk. Using default 8GB target. "
+        "Output shards will match this size, not necessarily the originals."
+    )
+    return 8 * 1024 ** 3
 
 
 def main():
@@ -128,9 +183,13 @@ def main():
         print("ERROR: Model is not sharded. This script handles sharded models.", file=sys.stderr)
         sys.exit(1)
 
-    original_experts = config.get("n_routed_experts", 0)
+    expert_count_key, original_experts = find_expert_count(config)
     if original_experts == 0:
-        print("ERROR: Could not find 'n_routed_experts' in config.json", file=sys.stderr)
+        print(
+            "ERROR: Could not find any expert count key in config.json. "
+            f"Tried: {', '.join(EXPERT_COUNT_KEYS)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     target_experts = args.target_experts if args.target_experts else original_experts * 2
@@ -143,10 +202,11 @@ def main():
     print(f"Expanding experts: {original_experts} -> {target_experts} (factor: {expansion_factor})")
 
     shard_files = sorted(set(index["weight_map"].values()))
+    source_to_targets = build_expert_target_map(original_experts, target_experts)
 
     # ── Update & write config ───────────────────────────────────────────
     updated_keys = []
-    for key in ["n_routed_experts", "num_experts", "n_experts"]:
+    for key in EXPERT_COUNT_KEYS:
         if key in config:
             config[key] = target_experts
             updated_keys.append(key)
@@ -163,36 +223,66 @@ def main():
 
     # ── Pass 1: Scan headers to determine output layout ─────────────────
     print("\nPass 1/2: Scanning headers to determine output layout...")
+    target_shard_size = auto_detect_shard_size(model_dir, shard_files)
     total_output_bytes = 0
-    
-    # We'll use a target shard size similar to the average original shard size
-    total_original_size = index.get("metadata", {}).get("total_size", 0)
-    if total_original_size == 0:
-        # Fallback: sum up file sizes
-        for sf in shard_files:
-            total_original_size += (model_dir / sf).stat().st_size
-    
-    avg_shard_size = total_original_size // len(shard_files)
-    target_shard_size = avg_shard_size
     print(f"Target shard size: {target_shard_size / 1e9:.2f} GB")
 
+    num_output_shards = 1
+    current_bytes = 0
+    total_original = 0
+    total_duplicated = 0
+
     for shard_file in tqdm(shard_files, desc="Scanning"):
-        header = read_safetensors_header(model_dir / shard_file)
+        shard_path = model_dir / shard_file
+        if not shard_path.exists():
+            tqdm.write(f"  WARNING: {shard_file} not found — skipping")
+            continue
+
+        header = read_safetensors_header(shard_path)
         for key, (dtype, shape) in header.items():
             nbytes = get_nbytes_from_meta(dtype, shape)
-            
-            if is_router_param(key):
-                # Router weights are expanded by expansion_factor
-                total_output_bytes += nbytes * expansion_factor
-            elif get_expert_info(key):
-                # Expert weights are duplicated
-                total_output_bytes += nbytes * expansion_factor
-            else:
-                # Other weights stay the same
-                total_output_bytes += nbytes
 
-    num_output_shards = int(total_output_bytes // target_shard_size) + 1
-    print(f"Planned output size: {total_output_bytes / 1e9:.2f} GB across ~{num_output_shards} shards")
+            if is_router_param(key):
+                new_nbytes = nbytes * expansion_factor
+                if new_nbytes + current_bytes > target_shard_size and current_bytes > 0:
+                    num_output_shards += 1
+                    current_bytes = 0
+                current_bytes += new_nbytes
+                total_output_bytes += new_nbytes
+                total_original += 1
+            elif info := get_expert_info(key):
+                _, expert_idx, _ = info
+                if nbytes + current_bytes > target_shard_size and current_bytes > 0:
+                    num_output_shards += 1
+                    current_bytes = 0
+                current_bytes += nbytes
+                total_output_bytes += nbytes
+                total_original += 1
+
+                for _ in source_to_targets.get(expert_idx, []):
+                    if nbytes + current_bytes > target_shard_size and current_bytes > 0:
+                        num_output_shards += 1
+                        current_bytes = 0
+                    current_bytes += nbytes
+                    total_output_bytes += nbytes
+                    total_duplicated += 1
+            else:
+                if nbytes + current_bytes > target_shard_size and current_bytes > 0:
+                    num_output_shards += 1
+                    current_bytes = 0
+                current_bytes += nbytes
+                total_output_bytes += nbytes
+                total_original += 1
+
+    print(
+        f"Output plan: {total_original:,} original + {total_duplicated:,} duplicated "
+        f"= {total_original + total_duplicated:,} tensors"
+    )
+    print(
+        f"Planned output size: {total_output_bytes / 1e9:.2f} GB across "
+        f"{num_output_shards} shard(s) "
+        f"(~{total_output_bytes / num_output_shards / 1e9:.2f} GB each)"
+    )
 
     # ── Pass 2: Process and write ───────────────────────────────────────
     new_weight_map: dict[str, str] = {}
@@ -233,13 +323,17 @@ def main():
                 
                 elif info := get_expert_info(key):
                     layer_idx, expert_idx, rest = info
-                    # Duplicate experts
-                    for i in range(expansion_factor):
-                        new_expert_idx = expert_idx + i * original_experts
+                    # Keep the original expert and add only the new expert copies.
+                    if current_bytes + nbytes > target_shard_size and current_tensors:
+                        flush_shard()
+                    current_tensors[key] = tensor
+                    current_bytes += nbytes
+
+                    for new_expert_idx in source_to_targets.get(expert_idx, []):
                         new_key = f"model.layers.{layer_idx}.mlp.experts.{new_expert_idx}.{rest}"
                         if current_bytes + nbytes > target_shard_size and current_tensors:
                             flush_shard()
-                        current_tensors[new_key] = tensor.clone() if i > 0 else tensor
+                        current_tensors[new_key] = tensor.clone()
                         current_bytes += nbytes
                 
                 else:
@@ -251,12 +345,32 @@ def main():
 
     flush_shard()
 
-    # ── Write new index ──────────────────────────────────────────────────
     actual_shards = output_shard_idx - 1
+    if actual_shards != num_output_shards:
+        print(
+            f"WARNING: Predicted {num_output_shards} shards but wrote {actual_shards}. "
+            "Adjusting shard names and index..."
+        )
+        for i in range(1, actual_shards + 1):
+            old_name = output_dir / f"model_{i:05d}-of-{num_output_shards:05d}.safetensors"
+            new_name = output_dir / f"model_{i:05d}-of-{actual_shards:05d}.safetensors"
+            if old_name.exists() and old_name != new_name:
+                old_name.rename(new_name)
+        num_output_shards = actual_shards
+
+    # ── Write new index ──────────────────────────────────────────────────
+    metadata = {**index.get("metadata", {})}
+    metadata["total_size"] = total_output_bytes
     new_index = {
-        "metadata": {"total_size": total_output_bytes},
-        "weight_map": {k: re.sub(r"-of-\d+\.safetensors", f"-of-{actual_shards:05d}.safetensors", v) 
-                       for k, v in new_weight_map.items()}
+        "metadata": metadata,
+        "weight_map": {
+            k: re.sub(
+                r"-of-\d+\.safetensors",
+                f"-of-{num_output_shards:05d}.safetensors",
+                v,
+            )
+            for k, v in new_weight_map.items()
+        },
     }
     with open(output_dir / "model.safetensors.index.json", "w") as f:
         json.dump(new_index, f, indent=2)
@@ -268,6 +382,10 @@ def main():
         if fpath.is_file() and fpath.suffix not in skip_suffixes and fpath.name not in skip_names:
             shutil.copy2(fpath, output_dir / fpath.name)
 
+    print("\nVerification:")
+    print(f"  Expert count key used: {expert_count_key or 'n_routed_experts'}")
+    print(f"  Config experts: {target_experts}")
+    print(f"  Output shards: {num_output_shards}")
     print(f"\nDone! Output saved to: {output_dir}")
 
 if __name__ == "__main__":

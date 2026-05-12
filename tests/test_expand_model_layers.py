@@ -1,11 +1,13 @@
 import json
 import os
 import shutil
+import subprocess
 import unittest
 from pathlib import Path
-import torch
-from safetensors.torch import save_file, load_file
 import sys
+
+import torch
+from safetensors.torch import load_file, save_file
 
 # Add the project root to sys.path to import the script
 sys.path.append(str(Path(__file__).parent.parent))
@@ -13,7 +15,8 @@ from utils.expand_model_layers import main as double_main
 
 class TestDoubleHfModelLayers(unittest.TestCase):
     def setUp(self):
-        self.test_dir = Path("tests/tmp_double_test")
+        self.project_root = Path(__file__).resolve().parent.parent
+        self.test_dir = self.project_root / "tests/tmp_double_test"
         self.model_dir = self.test_dir / "original_model"
         self.output_dir = self.test_dir / "doubled_model"
         
@@ -123,6 +126,47 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         # Both Layer 2 and Layer 3 should copy Layer 1
         torch.testing.assert_close(all_weights["model.layers.2.input_layernorm.weight"], torch.full((16,), 1.0))
         torch.testing.assert_close(all_weights["model.layers.3.input_layernorm.weight"], torch.full((16,), 1.0))
+
+    def test_double_layers_explicit_copy_list(self):
+        sys.argv = [
+            "double_hf_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--copy_source", "1,0"
+        ]
+        double_main()
+
+        all_weights = {}
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        torch.testing.assert_close(all_weights["model.layers.2.input_layernorm.weight"], torch.full((16,), 1.0))
+        torch.testing.assert_close(all_weights["model.layers.3.input_layernorm.weight"], torch.full((16,), 0.0))
+
+    def test_expand_model_layers_shell_script(self):
+        script_path = self.project_root / "scripts/expand_model_layers.sh"
+        env = os.environ.copy()
+        env["MODEL_DIR"] = str(self.model_dir)
+        env["OUTPUT_DIR"] = str(self.output_dir)
+        env["ORIGINAL_LAYERS"] = "2"
+
+        result = subprocess.run(
+            ["bash", str(script_path), "seq"],
+            cwd=self.project_root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["num_layers"], 4)
 
 if __name__ == "__main__":
     unittest.main()

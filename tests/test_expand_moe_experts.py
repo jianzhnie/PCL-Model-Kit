@@ -1,11 +1,11 @@
 import json
-import os
 import shutil
 import unittest
 from pathlib import Path
-import torch
-from safetensors.torch import save_file, load_file
 import sys
+
+import torch
+from safetensors.torch import load_file, save_file
 
 # Add the project root to sys.path to import the script
 sys.path.append(str(Path(__file__).parent.parent))
@@ -13,7 +13,8 @@ from utils.expand_moe_experts import main as expand_main
 
 class TestExpandMoeExperts(unittest.TestCase):
     def setUp(self):
-        self.test_dir = Path("tests/tmp_moe_test")
+        self.project_root = Path(__file__).resolve().parent.parent
+        self.test_dir = self.project_root / "tests/tmp_moe_test"
         self.model_dir = self.test_dir / "original_model"
         self.output_dir = self.test_dir / "expanded_model"
         
@@ -117,6 +118,75 @@ class TestExpandMoeExperts(unittest.TestCase):
             torch.testing.assert_close(all_weights[f"model.layers.0.mlp.experts.{i}.gate_proj.weight"], torch.full((32, 16), orig_val))
             # New expert (i+4)
             torch.testing.assert_close(all_weights[f"model.layers.0.mlp.experts.{i+4}.gate_proj.weight"], torch.full((32, 16), orig_val))
+
+        for shard_name in set(new_index["weight_map"].values()):
+            self.assertTrue((self.output_dir / shard_name).exists())
+
+    def test_expansion_with_gate_router_and_n_experts_key(self):
+        shutil.rmtree(self.test_dir)
+        self.model_dir.mkdir(parents=True)
+
+        config = {
+            "model_type": "longcat",
+            "n_experts": 4,
+            "hidden_size": 16,
+            "expert_ffn_hidden_size": 32,
+            "num_layers": 1,
+        }
+        with open(self.model_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        weights = {
+            "model.embed_tokens.weight": torch.randn(100, 16),
+            "model.layers.0.mlp.gate.weight": torch.randn(4, 16),
+            "model.layers.0.mlp.gate.e_score_correction_bias": torch.randn(4),
+            "model.norm.weight": torch.randn(16),
+        }
+        for i in range(4):
+            weights[f"model.layers.0.mlp.experts.{i}.gate_proj.weight"] = torch.full((32, 16), float(i))
+
+        shard1 = {k: v for idx, (k, v) in enumerate(weights.items()) if idx % 2 == 0}
+        shard2 = {k: v for idx, (k, v) in enumerate(weights.items()) if idx % 2 != 0}
+        save_file(shard1, str(self.model_dir / "model-00001-of-00002.safetensors"))
+        save_file(shard2, str(self.model_dir / "model-00002-of-00002.safetensors"))
+
+        index = {"metadata": {"total_size": 0}, "weight_map": {}}
+        for key in shard1:
+            index["weight_map"][key] = "model-00001-of-00002.safetensors"
+        for key in shard2:
+            index["weight_map"][key] = "model-00002-of-00002.safetensors"
+        with open(self.model_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(index, f)
+
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_experts", "8"
+        ]
+        expand_main()
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["n_experts"], 8)
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        self.assertEqual(all_weights["model.layers.0.mlp.gate.weight"].shape, (8, 16))
+        self.assertEqual(all_weights["model.layers.0.mlp.gate.e_score_correction_bias"].shape, (8,))
+        torch.testing.assert_close(
+            all_weights["model.layers.0.mlp.experts.4.gate_proj.weight"],
+            torch.full((32, 16), 0.0),
+        )
+        torch.testing.assert_close(
+            all_weights["model.layers.0.mlp.experts.7.gate_proj.weight"],
+            torch.full((32, 16), 3.0),
+        )
 
 if __name__ == "__main__":
     unittest.main()

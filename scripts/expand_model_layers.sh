@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-DOUBLE_SCRIPT="$(dirname "$0")/../utils/double_hf_model_layers.py"
+DOUBLE_SCRIPT="$(dirname "$0")/../utils/expand_model_layers.py"
 
 MODEL_DIR="${MODEL_DIR:-/mnt/xufan_400T/models/LongCat-Flash-Chat}"
 OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-56L}"
@@ -50,7 +50,7 @@ case "$MODE" in
     list)
         if [ -z "$ARG" ]; then
             echo "ERROR: list mode requires ${ORIGINAL_LAYERS} comma-separated source indices, e.g.:"
-            echo "  bash scripts/double_layers.sh list \"0,0,1,1,2,2,...\""
+            echo "  bash scripts/expand_model_layers.sh list \"0,0,1,1,2,2,...\""
             exit 1
         fi
         echo "  → Custom mapping: ${ARG}"
@@ -63,11 +63,18 @@ case "$MODE" in
 esac
 
 echo ""
-python3 "$DOUBLE_SCRIPT" \
-    --model_dir "$MODEL_DIR" \
-    --output_dir "$OUTPUT_DIR" \
-    --original_layers "$ORIGINAL_LAYERS" \
-    "${COPY_ARGS[@]}"
+CMD=(
+    python3 "$DOUBLE_SCRIPT"
+    --model_dir "$MODEL_DIR"
+    --output_dir "$OUTPUT_DIR"
+    --original_layers "$ORIGINAL_LAYERS"
+)
+
+if [ "${#COPY_ARGS[@]}" -gt 0 ]; then
+    CMD+=("${COPY_ARGS[@]}")
+fi
+
+"${CMD[@]}"
 
 echo ""
 echo "Done. Output model at: ${OUTPUT_DIR}"
