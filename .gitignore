@@ -213,3 +213,5 @@ TODO.md
 models/k2_base.py
 *.json
 prompts/
+hf_infer/
+archived/
