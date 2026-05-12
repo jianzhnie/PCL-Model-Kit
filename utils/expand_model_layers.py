@@ -34,6 +34,7 @@ DTYPE_SIZES: dict[str, int] = {
     "F16": 2, "BF16": 2, "I16": 2,
     "F8_E4M3": 1, "F8_E5M2": 1,
     "F8_E4M3FN": 1, "F8_E5M2FN": 1,
+    "F8_E4M3FNUZ": 1, "F8_E5M2FNUZ": 1,
     "I8": 1, "U8": 1, "BOOL": 1,
 }
 
@@ -461,7 +462,11 @@ def main():
     # ── Quick verification ──────────────────────────────────────────────
     print("\nVerification:")
     out_cfg = load_config(output_dir)
-    print(f"  num_layers in config: {out_cfg['num_layers']}")
+    layer_key = next((k for k in ["num_layers", "num_hidden_layers", "n_layers"] if k in out_cfg), None)
+    if layer_key:
+        print(f"  {layer_key} in config: {out_cfg[layer_key]}")
+    else:
+        print(f"  WARNING: no recognized layer-count key found in config")
 
     out_idx = load_index(output_dir)
     if out_idx:

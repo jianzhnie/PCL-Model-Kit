@@ -1,12 +1,13 @@
 #!/bin/bash
-# Double model layers from 28 → 56 by copying original layer weights.
+# Double model layers from N → 2N by copying original layer weights.
 #
 # Usage:
-#   bash scripts/double_layers.sh                      # sequential copy (default)
-#   bash scripts/double_layers.sh seq                  # same as above
-#   bash scripts/double_layers.sh single 0             # all new layers copy layer 0
-#   bash scripts/double_layers.sh single 5             # all new layers copy layer 5
-#   bash scripts/double_layers.sh list "0,0,1,1,..."   # explicit 28-entry mapping
+#   bash scripts/expand_model_layers.sh [mode] [arg]
+#
+# Examples:
+#   bash scripts/expand_model_layers.sh seq                  # sequential copy (default)
+#   bash scripts/expand_model_layers.sh single 0             # all new layers copy layer 0
+#   bash scripts/expand_model_layers.sh list "0,0,1,1,..."   # explicit mapping
 
 set -euo pipefail
 
@@ -27,6 +28,11 @@ echo "Output dir:    ${OUTPUT_DIR}"
 echo "Layers:        ${ORIGINAL_LAYERS} → $((ORIGINAL_LAYERS * 2))"
 echo "Copy mode:     ${MODE}"
 
+if [ ! -d "$MODEL_DIR" ]; then
+    echo "ERROR: Model directory not found: $MODEL_DIR"
+    exit 1
+fi
+
 COPY_ARGS=()
 case "$MODE" in
     seq)
@@ -35,7 +41,7 @@ case "$MODE" in
     single)
         if [ -z "$ARG" ]; then
             echo "ERROR: single mode requires a source layer index, e.g.:"
-            echo "  bash scripts/double_layers.sh single 0"
+            echo "  bash scripts/expand_model_layers.sh single 0"
             exit 1
         fi
         echo "  → All ${ORIGINAL_LAYERS} new layers copy from layer ${ARG}"
