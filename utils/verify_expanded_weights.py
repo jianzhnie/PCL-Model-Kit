@@ -36,8 +36,12 @@ def load_config(model_dir: Path) -> dict:
     if not config_path.exists():
         print(f"ERROR: config.json not found in {model_dir}", file=sys.stderr)
         return {}
-    with open(config_path) as f:
-        return json.load(f)
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"ERROR reading config.json in {model_dir}: {e}", file=sys.stderr)
+        return {}
 
 
 def load_index(model_dir: Path):
@@ -70,10 +74,6 @@ def get_expert_info(param_name: str) -> tuple[int, int, str] | None:
     if m:
         return int(m.group(1)), int(m.group(2)), m.group(3)
     return None
-
-
-def is_router_param(param_name: str) -> bool:
-    return param_name.endswith(ROUTER_SUFFIXES)
 
 
 def find_expert_count(config: dict) -> tuple[int, int]:
@@ -136,11 +136,17 @@ class ModelWeightLoader:
         self.weight_map = self.index['weight_map'] if self.index else None
 
         if not self.weight_map:
-            files = list(model_dir.glob('*.safetensors'))
+            files = sorted(list(model_dir.glob('*.safetensors')))
             if not files:
                 raise FileNotFoundError(f"No safetensors found in {model_dir}")
-            with safe_open(files[0], framework='pt') as sf:
-                self.weight_map = {k: files[0].name for k in sf.keys()}
+            
+            self.weight_map = {}
+            for f in files:
+                with safe_open(f, framework='pt') as sf:
+                    for k in sf.keys():
+                        if k in self.weight_map:
+                            print(f"WARNING: Duplicate parameter {k} found in {f.name} and {self.weight_map[k]}")
+                        self.weight_map[k] = f.name
 
         self._local = threading.local()
         self.params_by_shard = defaultdict(list)
@@ -185,15 +191,17 @@ def verify_layers(orig_loader,
 
     # ── Structural pre-check ──────────────────────────────────────────────
     exp_layer_indices: set[int] = set()
-    exp_layer_param_counts: dict[int, int] = defaultdict(int)
-    exp_non_layer_count = 0
+    exp_layer_params: dict[int, set[str]] = defaultdict(set)
+    exp_non_layer_params: set[str] = set()
     for name in exp_loader.weight_map:
         li = get_layer_index(name)
         if li is not None:
             exp_layer_indices.add(li)
-            exp_layer_param_counts[li] += 1
+            # Normalize name: model.layers.5.xxx -> xxx
+            norm_name = re.sub(r'model\.layers\.\d+\.', '', name)
+            exp_layer_params[li].add(norm_name)
         else:
-            exp_non_layer_count += 1
+            exp_non_layer_params.add(name)
 
     expected_layers = set(range(target_layers))
     missing_layers = expected_layers - exp_layer_indices
@@ -203,41 +211,46 @@ def verify_layers(orig_loader,
     if extra_layers:
         return [f"Unexpected layers in expanded model: {sorted(extra_layers)}"]
 
-    orig_layer_param_counts: dict[int, int] = defaultdict(int)
-    orig_non_layer_count = 0
+    orig_layer_params: dict[int, set[str]] = defaultdict(set)
+    orig_non_layer_params: set[str] = set()
     for name in orig_loader.weight_map:
         li = get_layer_index(name)
         if li is not None:
-            orig_layer_param_counts[li] += 1
+            norm_name = re.sub(r'model\.layers\.\d+\.', '', name)
+            orig_layer_params[li].add(norm_name)
         else:
-            orig_non_layer_count += 1
+            orig_non_layer_params.add(name)
 
-    if orig_non_layer_count != exp_non_layer_count:
-        print(f"WARNING: Non-layer parameter count differs: "
-              f"orig={orig_non_layer_count} vs exp={exp_non_layer_count}")
+    if orig_non_layer_params != exp_non_layer_params:
+        print(f"WARNING: Non-layer parameter names differ.")
+        diff = orig_non_layer_params ^ exp_non_layer_params
+        print(f"  Difference: {diff}")
 
+    # Check original layers (0 to original_layers-1)
     for li in range(original_layers):
-        oc = orig_layer_param_counts.get(li, 0)
-        ec = exp_layer_param_counts.get(li, 0)
-        if oc != ec:
+        op = orig_layer_params.get(li, set())
+        ep = exp_layer_params.get(li, set())
+        if op != ep:
             return [
-                f"Param count mismatch in layer {li}: orig={oc} vs exp={ec}"
+                f"Param name mismatch in layer {li}: "
+                f"orig-only={op-ep}, exp-only={ep-op}"
             ]
 
+    # Check new layers (original_layers to target_layers-1)
     for offset, src in enumerate(mapping):
         new_li = original_layers + offset
-        sc = orig_layer_param_counts.get(src, 0)
-        ec = exp_layer_param_counts.get(new_li, 0)
-        if sc != ec:
+        sp = orig_layer_params.get(src, set())
+        ep = exp_layer_params.get(new_li, set())
+        if sp != ep:
             return [
-                f"Param count mismatch in new layer {new_li} "
-                f"(←src layer {src}): exp={ec} vs src={sc}"
+                f"Param name mismatch in new layer {new_li} (←src layer {src}): "
+                f"src-only={sp-ep}, exp-only={ep-sp}"
             ]
 
     print(f"  Structural check passed: "
-          f"{exp_non_layer_count} non-layer params, "
+          f"{len(exp_non_layer_params)} non-layer params, "
           f"{len(exp_layer_indices)} layers present, "
-          f"{sum(exp_layer_param_counts.values())} layer params total")
+          f"{sum(len(v) for v in exp_layer_params.values())} layer params total")
 
     # ── Tensor value verification ─────────────────────────────────────────
     mismatches = []
@@ -290,7 +303,7 @@ def verify_layers(orig_loader,
     return mismatches
 
 
-def verify_experts(orig_loader, exp_loader, workers=8):
+def verify_experts(orig_loader, exp_loader, router_suffixes=ROUTER_SUFFIXES, workers=8):
     orig_experts, orig_zero = find_expert_count(orig_loader.config)
     exp_experts, exp_zero = find_expert_count(exp_loader.config)
 
@@ -318,25 +331,62 @@ def verify_experts(orig_loader, exp_loader, workers=8):
     # ── Structural pre-check ──────────────────────────────────────────────
     exp_experts_by_layer: dict[int, set[int]] = defaultdict(set)
     exp_router_layers: set[int] = set()
+    exp_expert_params: dict[int, set[str]] = defaultdict(set)
 
     for name in exp_loader.weight_map:
         info = get_expert_info(name)
         if info:
-            exp_experts_by_layer[info[0]].add(info[1])
-        elif is_router_param(name):
+            l_idx, e_idx, rest = info
+            exp_experts_by_layer[l_idx].add(e_idx)
+            exp_expert_params[l_idx].add(rest)
+        elif name.endswith(router_suffixes):
             li = get_layer_index(name)
             if li is not None:
                 exp_router_layers.add(li)
 
+    orig_experts_by_layer: dict[int, set[int]] = defaultdict(set)
+    orig_router_layers: set[int] = set()
+    orig_expert_params: dict[int, set[str]] = defaultdict(set)
+
+    for name in orig_loader.weight_map:
+        info = get_expert_info(name)
+        if info:
+            l_idx, e_idx, rest = info
+            orig_experts_by_layer[l_idx].add(e_idx)
+            orig_expert_params[l_idx].add(rest)
+        elif name.endswith(router_suffixes):
+            li = get_layer_index(name)
+            if li is not None:
+                orig_router_layers.add(li)
+
+    if orig_router_layers != exp_router_layers:
+        return [
+            f"Router layer mismatch. "
+            f"Orig layers: {sorted(orig_router_layers)}, "
+            f"Exp layers: {sorted(exp_router_layers)}"
+        ]
+
     target_total_experts = exp_experts + exp_zero
-    for layer_idx, exp_indices in exp_experts_by_layer.items():
-        actual = sorted(exp_indices)
-        expected = list(range(target_total_experts))
-        if actual != expected:
+    orig_total_experts = orig_experts + orig_zero
+
+    for layer_idx in exp_experts_by_layer:
+        # Check expert indices
+        actual_indices = sorted(exp_experts_by_layer[layer_idx])
+        expected_indices = list(range(target_total_experts))
+        if actual_indices != expected_indices:
             return [
                 f"Layer {layer_idx}: expert indices mismatch. "
                 f"Expected [0-{target_total_experts - 1}], "
-                f"got {actual[:8]}{'...' if len(actual) > 8 else ''}"
+                f"got {actual_indices[:8]}{'...' if len(actual_indices) > 8 else ''}"
+            ]
+
+        # Check expert parameter names (e.g., w1.weight, w2.weight)
+        op = orig_expert_params.get(layer_idx, set())
+        ep = exp_expert_params.get(layer_idx, set())
+        if op != ep:
+            return [
+                f"Layer {layer_idx}: expert parameter name mismatch. "
+                f"orig-only={op-ep}, exp-only={ep-op}"
             ]
 
     print(
@@ -356,7 +406,7 @@ def verify_experts(orig_loader, exp_loader, workers=8):
                        framework='pt') as sf_exp:
             for exp_name in exp_loader.params_by_shard[shard_name]:
                 # 1. Router parameters
-                if is_router_param(exp_name):
+                if exp_name.endswith(router_suffixes):
                     t_exp = sf_exp.get_tensor(exp_name)
                     t_orig = orig_loader.get_tensor(exp_name)
 
@@ -484,6 +534,10 @@ def main():
                         type=str,
                         default='seq',
                         help='Copy source mapping (seq, idx, or comma list)')
+    parser.add_argument('--router_suffixes',
+                        type=str,
+                        default=None,
+                        help='Comma-separated custom router suffixes')
 
     parser.add_argument('--workers',
                         type=int,
@@ -519,9 +573,17 @@ def main():
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
     else:
-        mismatches = verify_experts(orig_loader,
-                                    exp_loader,
-                                    workers=args.workers)
+        router_suffixes = ROUTER_SUFFIXES
+        if args.router_suffixes:
+            router_suffixes = tuple(s.strip()
+                                    for s in args.router_suffixes.split(','))
+
+        mismatches = verify_experts(
+            orig_loader,
+            exp_loader,
+            router_suffixes=router_suffixes,
+            workers=args.workers,
+        )
 
     if mismatches:
         print(f"\n❌ Verification FAILED with {len(mismatches)} mismatches!")

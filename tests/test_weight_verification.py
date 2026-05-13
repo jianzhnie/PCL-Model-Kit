@@ -250,7 +250,12 @@ class TestWeightVerification(unittest.TestCase):
         # Layer 1 count (2) != Layer 0 count (1) -> structural failure.
         m = verify_layers(ol, el, 1, 2, "0")
         self.assertGreater(len(m), 0)
-        self.assertTrue(any("Param count mismatch" in x or "Source missing" in x for x in m))
+        self.assertTrue(any(
+            "Param count mismatch" in x or 
+            "Param name mismatch" in x or 
+            "Source missing" in x 
+            for x in m
+        ))
 
     # ── verify_experts — success ─────────────────────────────────────────
 
