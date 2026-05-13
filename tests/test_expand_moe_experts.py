@@ -211,5 +211,70 @@ class TestExpandMoeExperts(unittest.TestCase):
             new_config = json.load(f)
         self.assertEqual(new_config["n_routed_experts"], 8)
 
+    def test_expansion_with_zero_experts(self):
+        # 1. Create config with zero_expert_num
+        config = {
+            "model_type": "longcat",
+            "n_routed_experts": 4,
+            "zero_expert_num": 2,
+            "hidden_size": 16,
+            "num_layers": 1
+        }
+        with open(self.model_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        # 2. Create weights (router dim = 4 + 2 = 6)
+        weights = {
+            "model.embed_tokens.weight": torch.randn(100, 16),
+            "model.layers.0.mlp.router.classifier.weight": torch.randn(6, 16),
+            "model.layers.0.mlp.router.e_score_correction_bias": torch.randn(6),
+            "model.norm.weight": torch.randn(16),
+        }
+        # Experts (only 4 real experts)
+        for i in range(4):
+            weights[f"model.layers.0.mlp.experts.{i}.gate_proj.weight"] = torch.full((32, 16), float(i))
+
+        # Save weights and index
+        save_file(weights, str(self.model_dir / "model.safetensors"))
+        index = {
+            "metadata": {"total_size": 0},
+            "weight_map": {k: "model.safetensors" for k in weights}
+        }
+        with open(self.model_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(index, f)
+
+        # 3. Run expansion (4 -> 8 experts)
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_experts", "8"
+        ]
+        expand_main()
+
+        # 4. Verify
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["n_routed_experts"], 8)
+        self.assertEqual(new_config["zero_expert_num"], 2)
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+        
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+        
+        # New router shape: 8 (real) + 2 (zero) = 10
+        self.assertEqual(all_weights["model.layers.0.mlp.router.classifier.weight"].shape, (10, 16))
+        self.assertEqual(all_weights["model.layers.0.mlp.router.e_score_correction_bias"].shape, (10,))
+
+        # Verify router content: [real, real, zero]
+        orig_router = weights["model.layers.0.mlp.router.classifier.weight"]
+        new_router = all_weights["model.layers.0.mlp.router.classifier.weight"]
+        torch.testing.assert_close(new_router[:4], orig_router[:4])   # First real copy
+        torch.testing.assert_close(new_router[4:8], orig_router[:4])  # Second real copy
+        torch.testing.assert_close(new_router[8:], orig_router[4:])   # Zero experts preserved at end
+
 if __name__ == "__main__":
     unittest.main()

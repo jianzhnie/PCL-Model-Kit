@@ -17,8 +17,8 @@ MODEL_DIR="${MODEL_DIR:-/mnt/xufan_400T/models/LongCat-Flash-Chat}"
 OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-56L}"
 ORIGINAL_LAYERS="${ORIGINAL_LAYERS:-28}"
 
-MODE="${1:-seq}"
-ARG="${2:-}"
+MODE="${1:-single}"
+ARG="${2:-28}"
 
 echo "============================================"
 echo "  Double Model Layers"

@@ -73,13 +73,20 @@ def is_router_param(param_name: str) -> bool:
     return param_name.endswith(ROUTER_WEIGHT_SUFFIXES + ROUTER_BIAS_SUFFIXES)
 
 
-def find_expert_count(config: dict) -> tuple[str | None, int]:
-    """Read the original expert count from known config keys."""
+def find_expert_count(config: dict) -> tuple[str | None, int, int]:
+    """Read the original expert count and zero_expert_num from config.
+
+    Returns (expert_count_key, original_experts, zero_expert_num).
+    original_experts is the number of REAL experts (MLP computation).
+    zero_expert_num is the number of 
+    virtual identity experts.
+    """
     for key in EXPERT_COUNT_KEYS:
         value = config.get(key)
         if isinstance(value, int) and value > 0:
-            return key, value
-    return None, 0
+            zero = config.get("zero_expert_num", 0) or 0
+            return key, value, zero
+    return None, 0, 0
 
 
 def build_expert_target_map(
@@ -128,15 +135,15 @@ def validate_expert_layout(index: dict, original_experts: int) -> dict[int, list
     return validated
 
 
-def validate_router_shape(param_name: str, shape: list[int], original_experts: int) -> None:
-    """Ensure router tensors expand along the expert dimension."""
+def validate_router_shape(param_name: str, shape: list[int], total_routed: int) -> None:
+    """Ensure router tensors have the expected first dimension (real experts + zero experts)."""
     if not shape:
         print(f"ERROR: Router tensor {param_name} has an empty shape.", file=sys.stderr)
         sys.exit(1)
-    if shape[0] != original_experts:
+    if shape[0] != total_routed:
         print(
             f"ERROR: Router tensor {param_name} has shape {shape}, expected first "
-            f"dimension to equal original expert count {original_experts}.",
+            f"dimension {total_routed} (n_routed_experts + zero_expert_num).",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -231,7 +238,7 @@ def main():
         print("ERROR: Model is not sharded. This script handles sharded models.", file=sys.stderr)
         sys.exit(1)
 
-    expert_count_key, original_experts = find_expert_count(config)
+    expert_count_key, original_experts, zero_expert_num = find_expert_count(config)
     if original_experts == 0:
         print(
             "ERROR: Could not find any expert count key in config.json. "
@@ -239,6 +246,8 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
+
+    total_routed = original_experts + zero_expert_num
 
     target_experts = args.target_experts if args.target_experts else original_experts * 2
     expansion_factor = target_experts // original_experts
@@ -248,6 +257,8 @@ def main():
         sys.exit(1)
 
     print(f"Expanding experts: {original_experts} -> {target_experts} (factor: {expansion_factor})")
+    if zero_expert_num > 0:
+        print(f"Zero experts: {zero_expert_num} (identity pass-through, router dim: {total_routed})")
 
     shard_files = sorted(set(index["weight_map"].values()))
     experts_by_layer = validate_expert_layout(index, original_experts)
@@ -293,8 +304,11 @@ def main():
             nbytes = get_nbytes_from_meta(dtype, shape)
 
             if is_router_param(key):
-                validate_router_shape(key, shape, original_experts)
-                new_nbytes = nbytes * expansion_factor
+                validate_router_shape(key, shape, total_routed)
+                # Router expands: real experts (×expansion_factor) + zero experts (unchanged)
+                # New size = nbytes * (target_experts + zero_expert_num) / total_routed
+                rows_per_expert = nbytes / total_routed
+                new_nbytes = int(rows_per_expert * (target_experts + zero_expert_num))
                 if new_nbytes + current_bytes > target_shard_size and current_bytes > 0:
                     num_output_shards += 1
                     current_bytes = 0
@@ -362,11 +376,18 @@ def main():
                 nbytes = tensor_nbytes(tensor)
 
                 if is_router_param(key):
-                    validate_router_shape(key, list(tensor.shape), original_experts)
-                    # Expand router: cat([W, W, ...], dim=0)
-                    # For classifier.weight (out_features, in_features)
-                    # For e_score_correction_bias (out_features)
-                    new_tensor = torch.cat([tensor] * expansion_factor, dim=0)
+                    validate_router_shape(key, list(tensor.shape), total_routed)
+                    # Router tensor stores weights for both real experts and
+                    # zero (identity) experts. Split along dim=0, expand only the
+                    # real-expert portion, then reattach the zero-expert portion
+                    # unchanged so its count stays the same.
+                    if zero_expert_num > 0:
+                        real_part = tensor[:original_experts]
+                        zero_part = tensor[original_experts:]
+                        expanded_real = torch.cat([real_part] * expansion_factor, dim=0)
+                        new_tensor = torch.cat([expanded_real, zero_part], dim=0)
+                    else:
+                        new_tensor = torch.cat([tensor] * expansion_factor, dim=0)
                     new_nbytes = tensor_nbytes(new_tensor)
                     if current_bytes + new_nbytes > target_shard_size and current_tensors:
                         flush_shard()
@@ -436,7 +457,7 @@ def main():
 
     print("\nVerification:")
     print(f"  Expert count key used: {expert_count_key or 'n_routed_experts'}")
-    print(f"  Config experts: {target_experts}")
+    print(f"  Config experts: {target_experts} (real) + {zero_expert_num} (zero) = {target_experts + zero_expert_num} total routed")
     print(f"  Output shards: {num_output_shards}")
     print(f"\nDone! Output saved to: {output_dir}")
 
