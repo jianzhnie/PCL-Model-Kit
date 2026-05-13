@@ -14,11 +14,14 @@ set -euo pipefail
 
 EXPAND_SCRIPT="$(dirname "$0")/../utils/expand_moe_experts.py"
 
-TARGET_EXPERTS="${1:-1024}"
-TARGET_TOPK="${2:-24}"
+TARGET_EXPERTS="${1:-}"
+TARGET_TOPK="${2:-}"
 # Default paths - update these as needed
 MODEL_DIR="${MODEL_DIR:-/mnt/xufan_400T/models/LongCat-Flash-Chat}"
-OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-Experts-${TARGET_EXPERTS}-Topk${TARGET_TOPK}}"
+SUFFIX="Experts"
+[ -n "$TARGET_EXPERTS" ] && SUFFIX="${SUFFIX}-${TARGET_EXPERTS}"
+[ -n "$TARGET_TOPK" ] && SUFFIX="${SUFFIX}-Topk${TARGET_TOPK}"
+OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-${SUFFIX}}"
 
 echo "============================================"
 echo "  Expand MoE Experts"

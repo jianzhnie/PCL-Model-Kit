@@ -331,8 +331,8 @@ def main():
                 validate_router_shape(key, shape, total_routed)
                 # Router expands: real experts (×expansion_factor) + zero experts (unchanged)
                 # New size = nbytes * (target_experts + zero_expert_num) / total_routed
-                rows_per_expert = nbytes / total_routed
-                new_nbytes = int(rows_per_expert * (target_experts + zero_expert_num))
+                bytes_per_expert = nbytes // total_routed
+                new_nbytes = bytes_per_expert * (target_experts + zero_expert_num)
                 if new_nbytes + current_bytes > target_shard_size and current_bytes > 0:
                     num_output_shards += 1
                     current_bytes = 0

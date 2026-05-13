@@ -70,18 +70,18 @@ def set_layer_index(param_name: str, new_index: int) -> str:
     )
 
 
-def parse_copy_source(raw: str | None, num_original: int) -> list[int]:
+def parse_copy_source(raw: str | None, num_original: int, num_new: int) -> list[int]:
     """Parse --copy_source into a list mapping: new_layer_idx → source_layer_idx.
 
-    new_layer_idx runs from num_original to 2*num_original - 1.
+    new_layer_idx runs from num_original to num_original + num_new - 1.
 
     Formats:
-      None / "seq"  →  sequential: [0, 1, 2, ..., num_original-1]
+      None / "seq"  →  sequential: [0, 1, 2, …, wrapping if num_new > num_original]
       "5"           →  all new layers copy from layer 5
-      "0,0,1,1,…"   →  explicit list, must have exactly num_original entries
+      "0,0,1,1,…"   →  explicit list, must have exactly num_new entries
     """
     if raw is None or raw.strip().lower() == "seq":
-        return list(range(num_original))
+        return [i % num_original for i in range(num_new)]
 
     raw = raw.strip()
     # Single integer → all new layers copy from that source
@@ -94,16 +94,16 @@ def parse_copy_source(raw: str | None, num_original: int) -> list[int]:
                 file=sys.stderr,
             )
             sys.exit(1)
-        return [single] * num_original
+        return [single] * num_new
     except ValueError:
         pass
 
     # Comma-separated list
     parts = [p.strip() for p in raw.split(",")]
-    if len(parts) != num_original:
+    if len(parts) != num_new:
         print(
             f"ERROR: --copy_source list has {len(parts)} entries, "
-            f"expected {num_original} (one per new layer).",
+            f"expected {num_new} (one per new layer).",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -158,7 +158,7 @@ def validate_layer_layout(index: dict, original_layers: int) -> list[int]:
 def build_reverse_map(source_list: list[int], num_original: int) -> dict[int, list[int]]:
     """Build reverse mapping: source_layer → [new_layer_indices].
 
-    new_layer_indices range from num_original to 2*num_original - 1.
+    new_layer_indices range from num_original to num_original + len(source_list) - 1.
     """
     rev: dict[int, list[int]] = defaultdict(list)
     for offset, src in enumerate(source_list):
@@ -247,6 +247,12 @@ def main():
         help="Number of layers in the original model (default: 28)",
     )
     parser.add_argument(
+        "--target_layers",
+        type=int,
+        default=None,
+        help="Target total number of layers. Defaults to double the original (original_layers * 2).",
+    )
+    parser.add_argument(
         "--copy_source",
         type=str,
         default=None,
@@ -260,7 +266,6 @@ def main():
     model_dir = Path(args.model_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
     original_layers = args.original_layers
-    num_new = original_layers  # doubling: same number of new layers as original
 
     if not model_dir.exists():
         print(f"ERROR: Model directory not found: {model_dir}", file=sys.stderr)
@@ -277,12 +282,24 @@ def main():
 
     shard_files = sorted(set(index["weight_map"].values()))
 
+    # ── Determine target layers ──────────────────────────────────────────
+    target_layers = args.target_layers if args.target_layers else original_layers * 2
+    num_new = target_layers - original_layers
+
+    if num_new <= 0:
+        print(
+            f"ERROR: target_layers ({target_layers}) must be greater than "
+            f"original_layers ({original_layers}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # ── Validate layer count against the actual model ────────────────────
     actual_layers = validate_layer_layout(index, original_layers)
     actual_max = actual_layers[-1]
 
     # ── Parse copy source mapping ────────────────────────────────────────
-    source_list = parse_copy_source(args.copy_source, original_layers)
+    source_list = parse_copy_source(args.copy_source, original_layers, num_new)
     # Reverse map: source_layer → [target new layer indices]
     source_to_targets = build_reverse_map(source_list, original_layers)
 
@@ -292,7 +309,7 @@ def main():
         for offset, src in enumerate(source_list):
             print(f"  layer {original_layers + offset} ← layer {src}")
     else:
-        print(f"Copy mode: sequential (layer N ← layer N-{original_layers})")
+        print(f"Copy mode: sequential (layer N ← layer N mod {original_layers})")
 
     # Detect shard size from existing files to keep output shards same size
     target_size_bytes = auto_detect_shard_size(model_dir, shard_files)
@@ -300,7 +317,7 @@ def main():
     print(f"Model directory: {model_dir}")
     print(f"Output directory: {output_dir}")
     print(f"Original layers: {original_layers} (detected: 0-{actual_max})")
-    print(f"New total layers: {original_layers * 2}")
+    print(f"Target layers: {target_layers} (+{num_new} new)")
     print(f"Target shard size: {target_size_bytes / 1e9:.2f} GB")
     print(f"Found {len(shard_files)} shard files, {len(index['weight_map'])} parameters")
 
@@ -308,7 +325,7 @@ def main():
     updated_keys = []
     for key in ["num_layers", "num_hidden_layers", "n_layers"]:
         if key in config:
-            config[key] = original_layers * 2
+            config[key] = target_layers
             updated_keys.append(key)
     
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -513,10 +530,10 @@ def main():
         if all_ok:
             print(f"    ✓ All {num_new} new layers match their source structure")
 
-        # Verify all 56 layers present
-        expected = set(range(original_layers * 2))
+        # Verify all target layers present
+        expected = set(range(target_layers))
         if set(sorted_layers) == expected:
-            print(f"  ✓ All {original_layers * 2} layers present")
+            print(f"  ✓ All {target_layers} layers present")
         else:
             missing = expected - set(sorted_layers)
             extra = set(sorted_layers) - expected
@@ -532,7 +549,8 @@ def main():
         layer_params_out = output_params - non_layer_out
         print(f"  Input parameters:  {input_params:,}")
         print(f"  Output parameters: {output_params:,} ({non_layer_out:,} non-layer + {layer_params_out:,} layer)")
-        print(f"  Expansion ratio:   {output_params / input_params:.2f}x")
+        if input_params > 0:
+            print(f"  Expansion ratio:   {output_params / input_params:.2f}x")
 
     print(f"\nDone! Output saved to: {output_dir}")
 

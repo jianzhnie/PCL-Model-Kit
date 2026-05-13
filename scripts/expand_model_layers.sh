@@ -14,18 +14,28 @@ set -euo pipefail
 DOUBLE_SCRIPT="$(dirname "$0")/../utils/expand_model_layers.py"
 
 MODEL_DIR="${MODEL_DIR:-/mnt/xufan_400T/models/LongCat-Flash-Chat}"
-OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-56L}"
 ORIGINAL_LAYERS="${ORIGINAL_LAYERS:-28}"
+TARGET_LAYERS="${TARGET_LAYERS:-}"
+
+# Auto-derive output dir suffix from target layers
+if [ -n "$TARGET_LAYERS" ]; then
+    OUTPUT_DIR_DEFAULT="/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-${TARGET_LAYERS}L"
+else
+    OUTPUT_DIR_DEFAULT="/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-$((ORIGINAL_LAYERS * 2))L"
+fi
+OUTPUT_DIR="${OUTPUT_DIR:-$OUTPUT_DIR_DEFAULT}"
 
 MODE="${1:-single}"
 ARG="${2:-27}"
 
+TARGET_DISPLAY="${TARGET_LAYERS:-$((ORIGINAL_LAYERS * 2))}"
+
 echo "============================================"
-echo "  Double Model Layers"
+echo "  Expand Model Layers"
 echo "============================================"
 echo "Model dir:     ${MODEL_DIR}"
 echo "Output dir:    ${OUTPUT_DIR}"
-echo "Layers:        ${ORIGINAL_LAYERS} → $((ORIGINAL_LAYERS * 2))"
+echo "Layers:        ${ORIGINAL_LAYERS} → ${TARGET_DISPLAY}"
 echo "Copy mode:     ${MODE}"
 
 if [ ! -d "$MODEL_DIR" ]; then
@@ -69,6 +79,10 @@ CMD=(
     --output_dir "$OUTPUT_DIR"
     --original_layers "$ORIGINAL_LAYERS"
 )
+
+if [ -n "$TARGET_LAYERS" ]; then
+    CMD+=(--target_layers "$TARGET_LAYERS")
+fi
 
 if [ "${#COPY_ARGS[@]}" -gt 0 ]; then
     CMD+=("${COPY_ARGS[@]}")
