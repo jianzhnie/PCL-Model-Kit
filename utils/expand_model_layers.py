@@ -341,8 +341,8 @@ def main():
             layer_params.add(param_name)
         else:
             non_layer_params.add(param_name)
-    print(f"Layer params (×2 after duplication): {len(layer_params)}")
-    print(f"Non-layer params (unchanged):        {len(non_layer_params)}")
+    print(f"Layer params (will be expanded):  {len(layer_params)}")
+    print(f"Non-layer params (unchanged):      {len(non_layer_params)}")
 
     # ── Pass 1: scan headers to determine exact shard count ─────────────
     # Read only safetensors headers (no tensor data) — fast and low-memory.

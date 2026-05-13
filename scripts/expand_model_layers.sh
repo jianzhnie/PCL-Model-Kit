@@ -29,6 +29,7 @@ MODE="${1:-single}"
 ARG="${2:-27}"
 
 TARGET_DISPLAY="${TARGET_LAYERS:-$((ORIGINAL_LAYERS * 2))}"
+NUM_NEW=$((TARGET_DISPLAY - ORIGINAL_LAYERS))
 
 echo "============================================"
 echo "  Expand Model Layers"
@@ -46,7 +47,7 @@ fi
 COPY_ARGS=()
 case "$MODE" in
     seq)
-        echo "  → Sequential: layer 28←0, 29←1, …, 55←27"
+        echo "  → Sequential: layer ${ORIGINAL_LAYERS}←0, $((ORIGINAL_LAYERS+1))←1, …, $((TARGET_DISPLAY-1))←$((NUM_NEW-1))"
         ;;
     single)
         if [ -z "$ARG" ]; then
@@ -54,12 +55,12 @@ case "$MODE" in
             echo "  bash scripts/expand_model_layers.sh single 0"
             exit 1
         fi
-        echo "  → All ${ORIGINAL_LAYERS} new layers copy from layer ${ARG}"
+        echo "  → All ${NUM_NEW} new layers copy from layer ${ARG}"
         COPY_ARGS=(--copy_source "$ARG")
         ;;
     list)
         if [ -z "$ARG" ]; then
-            echo "ERROR: list mode requires ${ORIGINAL_LAYERS} comma-separated source indices, e.g.:"
+            echo "ERROR: list mode requires ${NUM_NEW} comma-separated source indices, e.g.:"
             echo "  bash scripts/expand_model_layers.sh list \"0,0,1,1,2,2,...\""
             exit 1
         fi

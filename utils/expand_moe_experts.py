@@ -44,6 +44,7 @@ ROUTER_BIAS_SUFFIXES = (
     "mlp.router.e_score_correction_bias",
     "mlp.gate.e_score_correction_bias",
 )
+_ALL_ROUTER_SUFFIXES = ROUTER_WEIGHT_SUFFIXES + ROUTER_BIAS_SUFFIXES
 
 
 def load_config(model_dir: Path) -> dict:
@@ -71,7 +72,7 @@ def get_expert_info(param_name: str) -> tuple[int, int, str] | None:
 
 def is_router_param(param_name: str) -> bool:
     """Check if the parameter is a router weight or expert-bias tensor."""
-    return param_name.endswith(ROUTER_WEIGHT_SUFFIXES + ROUTER_BIAS_SUFFIXES)
+    return param_name.endswith(_ALL_ROUTER_SUFFIXES)
 
 
 def find_expert_count(config: dict) -> tuple[str | None, int, int]:
@@ -279,11 +280,6 @@ def main():
         if key in config:
             config[key] = target_experts
             updated_keys.append(key)
-
-    if not updated_keys:
-        print(f"WARNING: No expert count key found in config.json. Adding 'n_routed_experts'.")
-        config["n_routed_experts"] = target_experts
-        updated_keys.append("n_routed_experts")
 
     if args.target_topk is not None:
         topk_updated = False
