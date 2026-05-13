@@ -18,8 +18,11 @@ TARGET_EXPERTS="${1:-}"
 TARGET_TOPK="${2:-}"
 # Default paths - update these as needed
 MODEL_DIR="${MODEL_DIR:-/mnt/xufan_400T/models/LongCat-Flash-Chat}"
-SUFFIX="Experts"
-[ -n "$TARGET_EXPERTS" ] && SUFFIX="${SUFFIX}-${TARGET_EXPERTS}"
+if [ -n "$TARGET_EXPERTS" ]; then
+    SUFFIX="${TARGET_EXPERTS}E"
+else
+    SUFFIX="2xE"
+fi
 [ -n "$TARGET_TOPK" ] && SUFFIX="${SUFFIX}-Topk${TARGET_TOPK}"
 OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-${SUFFIX}}"
 

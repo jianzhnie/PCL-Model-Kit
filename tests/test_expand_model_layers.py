@@ -193,6 +193,39 @@ class TestDoubleHfModelLayers(unittest.TestCase):
 
         self.assertEqual(exc.exception.code, 1)
 
+    def test_target_layers_non_double(self):
+        """Test --target_layers with a non-doubling value (2 → 3 layers)."""
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--target_layers", "3",
+        ]
+        double_main()
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["num_layers"], 3)
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        # Original layers 0-1 unchanged
+        torch.testing.assert_close(all_weights["model.layers.0.input_layernorm.weight"], self.weights["model.layers.0.input_layernorm.weight"])
+        torch.testing.assert_close(all_weights["model.layers.1.input_layernorm.weight"], self.weights["model.layers.1.input_layernorm.weight"])
+        # New layer 2 copies layer 0 (sequential: 2 mod 2 = 0)
+        torch.testing.assert_close(all_weights["model.layers.2.input_layernorm.weight"], self.weights["model.layers.0.input_layernorm.weight"])
+        # Layer 3 should NOT exist
+        self.assertNotIn("model.layers.3.input_layernorm.weight", all_weights)
+
+        # Param count: 6 original + 2 per new layer = 6 + 2 = 8
+        self.assertEqual(len(new_index["weight_map"]), 8)
+
     def test_double_layers_longcat_structure(self):
         """Mimic LongCat naming: sub-indices like norm.0, norm.1, attn.0, attn.1, experts.X, mlps.X."""
         shutil.rmtree(self.test_dir)
@@ -319,6 +352,30 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         with open(self.output_dir / "config.json") as f:
             new_config = json.load(f)
         self.assertEqual(new_config["num_layers"], 4)
+
+    def test_target_layers_shell_script(self):
+        """Test expand_model_layers.sh with TARGET_LAYERS env var (2 → 3 layers)."""
+        script_path = self.project_root / "scripts/expand_model_layers.sh"
+        env = os.environ.copy()
+        env["MODEL_DIR"] = str(self.model_dir)
+        env["OUTPUT_DIR"] = str(self.output_dir)
+        env["ORIGINAL_LAYERS"] = "2"
+        env["TARGET_LAYERS"] = "3"
+
+        result = subprocess.run(
+            ["bash", str(script_path), "seq"],
+            cwd=self.project_root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["num_layers"], 3)
 
 if __name__ == "__main__":
     unittest.main()

@@ -228,6 +228,29 @@ class TestExpandMoeExperts(unittest.TestCase):
             new_config = json.load(f)
         self.assertEqual(new_config["n_routed_experts"], 8)
 
+    def test_expand_moe_experts_shell_script_with_explicit_target(self):
+        """Test expand_moe_experts.sh with explicit target_experts and target_topk args."""
+        script_path = self.project_root / "scripts/expand_moe_experts.sh"
+        env = os.environ.copy()
+        env["MODEL_DIR"] = str(self.model_dir)
+        env["OUTPUT_DIR"] = str(self.output_dir)
+
+        result = subprocess.run(
+            ["bash", str(script_path), "12", "24"],
+            cwd=self.project_root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["n_routed_experts"], 12)
+        self.assertEqual(new_config["moe_topk"], 24)
+
     def test_expansion_with_zero_experts(self):
         # 1. Create config with zero_expert_num
         config = {
