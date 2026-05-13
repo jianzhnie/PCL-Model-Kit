@@ -276,5 +276,61 @@ class TestExpandMoeExperts(unittest.TestCase):
         torch.testing.assert_close(new_router[4:8], orig_router[:4])  # Second real copy
         torch.testing.assert_close(new_router[8:], orig_router[4:])   # Zero experts preserved at end
 
+    def test_target_topk_updates_config(self):
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_experts", "8",
+            "--target_topk", "24",
+        ]
+        expand_main()
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["n_routed_experts"], 8)
+        self.assertEqual(new_config["moe_topk"], 24)
+
+    def test_target_topk_adds_key_when_not_present(self):
+        # Recreate config without any topk key
+        shutil.rmtree(self.test_dir)
+        self.model_dir.mkdir(parents=True)
+        config = {
+            "model_type": "longcat",
+            "n_routed_experts": 4,
+            "hidden_size": 16,
+            "num_layers": 1
+        }
+        with open(self.model_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        weights = {
+            "model.embed_tokens.weight": torch.randn(100, 16),
+            "model.layers.0.mlp.router.classifier.weight": torch.randn(4, 16),
+            "model.layers.0.mlp.router.e_score_correction_bias": torch.randn(4),
+            "model.norm.weight": torch.randn(16),
+        }
+        for i in range(4):
+            weights[f"model.layers.0.mlp.experts.{i}.gate_proj.weight"] = torch.full((32, 16), float(i))
+        save_file(weights, str(self.model_dir / "model.safetensors"))
+        index = {
+            "metadata": {"total_size": 0},
+            "weight_map": {k: "model.safetensors" for k in weights}
+        }
+        with open(self.model_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(index, f)
+
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_topk", "16",
+        ]
+        expand_main()
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["moe_topk"], 16)
+
 if __name__ == "__main__":
     unittest.main()

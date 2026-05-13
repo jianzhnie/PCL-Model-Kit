@@ -35,6 +35,7 @@ DTYPE_SIZES: dict[str, int] = {
 }
 
 EXPERT_COUNT_KEYS = ["n_routed_experts", "n_experts", "num_experts"]
+TOPK_KEYS = ["moe_topk", "num_experts_per_tok", "top_k"]
 ROUTER_WEIGHT_SUFFIXES = (
     "mlp.router.classifier.weight",
     "mlp.gate.weight",
@@ -221,6 +222,13 @@ def main():
         default=None,
         help="Target number of experts. Defaults to double the original.",
     )
+    parser.add_argument(
+        "--target_topk",
+        type=int,
+        default=None,
+        help="Target moe_topk (number of activated experts per token). "
+             "Defaults to unchanged.",
+    )
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -271,11 +279,27 @@ def main():
         if key in config:
             config[key] = target_experts
             updated_keys.append(key)
-    
+
     if not updated_keys:
         print(f"WARNING: No expert count key found in config.json. Adding 'n_routed_experts'.")
         config["n_routed_experts"] = target_experts
         updated_keys.append("n_routed_experts")
+
+    if args.target_topk is not None:
+        topk_updated = False
+        for key in TOPK_KEYS:
+            if key in config:
+                old_val = config[key]
+                config[key] = args.target_topk
+                print(f"Updating topk: {key} {old_val} → {args.target_topk}")
+                updated_keys.append(key)
+                topk_updated = True
+                break
+        if not topk_updated:
+            # Add moe_topk even if not present (some configs may not have it)
+            config["moe_topk"] = args.target_topk
+            print(f"Adding topk: moe_topk = {args.target_topk}")
+            updated_keys.append("moe_topk")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_dir / "config.json", "w") as f:
@@ -458,6 +482,8 @@ def main():
     print("\nVerification:")
     print(f"  Expert count key used: {expert_count_key or 'n_routed_experts'}")
     print(f"  Config experts: {target_experts} (real) + {zero_expert_num} (zero) = {target_experts + zero_expert_num} total routed")
+    if args.target_topk is not None:
+        print(f"  Topk: {args.target_topk}")
     print(f"  Output shards: {num_output_shards}")
     print(f"\nDone! Output saved to: {output_dir}")
 
