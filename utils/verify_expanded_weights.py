@@ -12,6 +12,8 @@ import json
 import re
 from collections import defaultdict
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import torch
 from safetensors import safe_open
@@ -63,11 +65,19 @@ class ModelWeightLoader:
                 raise FileNotFoundError(f"No safetensors found in {model_dir}")
             self.weight_map = {k: files[0].name for k in safe_open(files[0], framework="pt").keys()}
             
-        self.shards = {}
+        # Use thread-local storage for safe_open handles to ensure thread safety
+        self._local = threading.local()
+        
         # Group parameters by shard for faster access
         self.params_by_shard = defaultdict(list)
         for name, shard in self.weight_map.items():
             self.params_by_shard[shard].append(name)
+
+    @property
+    def shards(self):
+        if not hasattr(self._local, 'shards'):
+            self._local.shards = {}
+        return self._local.shards
 
     def get_tensor(self, name: str):
         if name not in self.weight_map:
@@ -130,7 +140,7 @@ def get_source_name_for_experts(exp_name, original_experts, target_experts):
     return exp_name
 
 
-def verify_layers(orig_loader, exp_loader, original_layers, target_layers, copy_source):
+def verify_layers(orig_loader, exp_loader, original_layers, target_layers, copy_source, workers=8):
     print(f"\nVerifying Layer Expansion: {original_layers} -> {target_layers}")
     
     # 1. Parse copy source
@@ -144,31 +154,37 @@ def verify_layers(orig_loader, exp_loader, original_layers, target_layers, copy_
     
     mismatches = []
     
-    # 2. Iterate shard-by-shard through the EXPANDED model
-    # This ensures we read the expanded model linearly (the bottleneck)
+    # 2. Iterate shard-by-shard through the EXPANDED model in parallel
     exp_shards = sorted(exp_loader.params_by_shard.keys())
     
-    for shard_name in tqdm(exp_shards, desc="Verifying Expanded Shards"):
+    def verify_shard(shard_name):
+        local_mismatches = []
         with safe_open(exp_loader.model_dir / shard_name, framework="pt") as sf_exp:
             for exp_name in exp_loader.params_by_shard[shard_name]:
                 src_name = get_source_name_for_layers(exp_name, original_layers, target_layers, mapping)
                 
                 if src_name is None:
-                    mismatches.append(f"Could not determine source for: {exp_name}")
+                    local_mismatches.append(f"Could not determine source for: {exp_name}")
                     continue
                 
                 t_exp = sf_exp.get_tensor(exp_name)
                 t_orig = orig_loader.get_tensor(src_name)
                 
                 if t_orig is None:
-                    mismatches.append(f"Source parameter {src_name} not found for: {exp_name}")
+                    local_mismatches.append(f"Source parameter {src_name} not found for: {exp_name}")
                 elif not torch.equal(t_exp, t_orig):
-                    mismatches.append(f"Value mismatch: {exp_name} (should match {src_name})")
+                    local_mismatches.append(f"Value mismatch: {exp_name} (should match {src_name})")
+        return local_mismatches
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(verify_shard, shard): shard for shard in exp_shards}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Verifying Expanded Shards"):
+            mismatches.extend(future.result())
 
     return mismatches
 
 
-def verify_experts(orig_loader, exp_loader):
+def verify_experts(orig_loader, exp_loader, workers=8):
     print("\nVerifying MoE Expert Expansion")
     
     with open(orig_loader.model_dir / "config.json") as f:
@@ -185,36 +201,35 @@ def verify_experts(orig_loader, exp_loader):
     mismatches = []
     expansion_factor = exp_experts // orig_experts
 
-    # Iterate shard-by-shard through the EXPANDED model
+    # Iterate shard-by-shard through the EXPANDED model in parallel
     exp_shards = sorted(exp_loader.params_by_shard.keys())
     
-    for shard_name in tqdm(exp_shards, desc="Verifying Expanded Shards"):
+    def verify_shard(shard_name):
+        local_mismatches = []
         with safe_open(exp_loader.model_dir / shard_name, framework="pt") as sf_exp:
             for exp_name in exp_loader.params_by_shard[shard_name]:
-                # 1. Special case: Routers (shape changed, cannot use simple torch.equal)
+                # 1. Special case: Routers
                 if is_router_param(exp_name):
                     t_exp = sf_exp.get_tensor(exp_name)
                     t_orig = orig_loader.get_tensor(exp_name)
                     
                     if t_orig is None:
-                        mismatches.append(f"Source router {exp_name} not found")
+                        local_mismatches.append(f"Source router {exp_name} not found")
                         continue
                         
-                    # Check expanded real experts part
                     real_orig = t_orig[:orig_experts]
                     real_exp = t_exp[:exp_experts]
                     
                     for f in range(expansion_factor):
                         part = real_exp[f*orig_experts : (f+1)*orig_experts]
                         if not torch.equal(real_orig, part):
-                            mismatches.append(f"Router value mismatch in real part (factor {f}): {exp_name}")
+                            local_mismatches.append(f"Router value mismatch in real part (factor {f}): {exp_name}")
                     
-                    # Check zero experts part
                     if zero_experts > 0:
                         zero_orig = t_orig[orig_experts:]
                         zero_exp = t_exp[exp_experts:]
                         if not torch.equal(zero_orig, zero_exp):
-                            mismatches.append(f"Router value mismatch in zero part: {exp_name}")
+                            local_mismatches.append(f"Router value mismatch in zero part: {exp_name}")
                     continue
 
                 # 2. Expert or general params
@@ -224,9 +239,15 @@ def verify_experts(orig_loader, exp_loader):
                 t_orig = orig_loader.get_tensor(src_name)
                 
                 if t_orig is None:
-                    mismatches.append(f"Source parameter {src_name} not found for: {exp_name}")
+                    local_mismatches.append(f"Source parameter {src_name} not found for: {exp_name}")
                 elif not torch.equal(t_exp, t_orig):
-                    mismatches.append(f"Value mismatch: {exp_name} (should match {src_name})")
+                    local_mismatches.append(f"Value mismatch: {exp_name} (should match {src_name})")
+        return local_mismatches
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(verify_shard, shard): shard for shard in exp_shards}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Verifying Expanded Shards"):
+            mismatches.extend(future.result())
 
     return mismatches
 
@@ -241,6 +262,7 @@ def main():
     parser.add_argument("--orig_layers", type=int, default=28)
     parser.add_argument("--target_layers", type=int, default=56)
     parser.add_argument("--copy_source", type=str, default="seq")
+    parser.add_argument("--workers", type=int, default=8, help="Number of parallel workers")
     
     args = parser.parse_args()
     
@@ -248,9 +270,9 @@ def main():
     exp_loader = ModelWeightLoader(Path(args.exp_dir))
     
     if args.type == "layers":
-        mismatches = verify_layers(orig_loader, exp_loader, args.orig_layers, args.target_layers, args.copy_source)
+        mismatches = verify_layers(orig_loader, exp_loader, args.orig_layers, args.target_layers, args.copy_source, workers=args.workers)
     else:
-        mismatches = verify_experts(orig_loader, exp_loader)
+        mismatches = verify_experts(orig_loader, exp_loader, workers=args.workers)
         
     if mismatches:
         print(f"\n❌ Verification FAILED with {len(mismatches)} mismatches!")

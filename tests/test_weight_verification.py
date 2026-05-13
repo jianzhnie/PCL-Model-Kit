@@ -121,5 +121,58 @@ class TestWeightVerification(unittest.TestCase):
         mismatches = verify_experts(orig_loader, exp_loader)
         self.assertEqual(len(mismatches), 0)
 
+    def test_verify_parallel_execution(self):
+        """Verify that parallel execution (multiple workers) works correctly."""
+        # Create a model with multiple shards to trigger actual parallel work
+        num_layers = 4
+        orig_weights = {}
+        for i in range(num_layers):
+            orig_weights[f"model.layers.{i}.w"] = torch.randn(10, 10)
+        
+        # Save into multiple shards
+        shard1 = {k: v for i, (k, v) in enumerate(orig_weights.items()) if i < 2}
+        shard2 = {k: v for i, (k, v) in enumerate(orig_weights.items()) if i >= 2}
+        
+        save_file(shard1, str(self.orig_dir / "model-00001.safetensors"))
+        save_file(shard2, str(self.orig_dir / "model-00002.safetensors"))
+        
+        index = {
+            "weight_map": {
+                "model.layers.0.w": "model-00001.safetensors",
+                "model.layers.1.w": "model-00001.safetensors",
+                "model.layers.2.w": "model-00002.safetensors",
+                "model.layers.3.w": "model-00002.safetensors",
+            }
+        }
+        with open(self.orig_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(index, f)
+
+        # Create expanded model (4 -> 8 layers)
+        exp_weights_shard1 = {} # layers 0,1,2,3
+        exp_weights_shard2 = {} # layers 4,5,6,7
+        
+        for i in range(4):
+            exp_weights_shard1[f"model.layers.{i}.w"] = orig_weights[f"model.layers.{i}.w"]
+            exp_weights_shard2[f"model.layers.{i+4}.w"] = orig_weights[f"model.layers.{i}.w"]
+            
+        save_file(exp_weights_shard1, str(self.exp_dir / "model-00001.safetensors"))
+        save_file(exp_weights_shard2, str(self.exp_dir / "model-00002.safetensors"))
+        
+        exp_index = {
+            "weight_map": {
+                **{f"model.layers.{i}.w": "model-00001.safetensors" for i in range(4)},
+                **{f"model.layers.{i+4}.w": "model-00002.safetensors" for i in range(4)}
+            }
+        }
+        with open(self.exp_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(exp_index, f)
+
+        orig_loader = ModelWeightLoader(self.orig_dir)
+        exp_loader = ModelWeightLoader(self.exp_dir)
+        
+        # Test with multiple workers
+        mismatches = verify_layers(orig_loader, exp_loader, 4, 8, "seq", workers=4)
+        self.assertEqual(len(mismatches), 0)
+
 if __name__ == "__main__":
     unittest.main()
