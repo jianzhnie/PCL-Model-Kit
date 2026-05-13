@@ -156,9 +156,10 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         for shard_name in set(new_index["weight_map"].values()):
             all_weights.update(load_file(str(self.output_dir / shard_name)))
             
-        # Both Layer 2 and Layer 3 should copy Layer 1
-        torch.testing.assert_close(all_weights["model.layers.2.input_layernorm.weight"], torch.full((16,), 1.0))
-        torch.testing.assert_close(all_weights["model.layers.3.input_layernorm.weight"], torch.full((16,), 1.0))
+        # Both Layer 2 and Layer 3 should copy Layer 1 exactly
+        src_key = "model.layers.1.input_layernorm.weight"
+        self.assertTrue(torch.equal(all_weights["model.layers.2.input_layernorm.weight"], self.weights[src_key]))
+        self.assertTrue(torch.equal(all_weights["model.layers.3.input_layernorm.weight"], self.weights[src_key]))
 
     def test_double_layers_explicit_copy_list(self):
         sys.argv = [
@@ -176,8 +177,9 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         for shard_name in set(new_index["weight_map"].values()):
             all_weights.update(load_file(str(self.output_dir / shard_name)))
 
-        torch.testing.assert_close(all_weights["model.layers.2.input_layernorm.weight"], torch.full((16,), 1.0))
-        torch.testing.assert_close(all_weights["model.layers.3.input_layernorm.weight"], torch.full((16,), 0.0))
+        # Layer 2 copies layer 1, Layer 3 copies layer 0
+        self.assertTrue(torch.equal(all_weights["model.layers.2.input_layernorm.weight"], self.weights["model.layers.1.input_layernorm.weight"]))
+        self.assertTrue(torch.equal(all_weights["model.layers.3.input_layernorm.weight"], self.weights["model.layers.0.input_layernorm.weight"]))
 
     def test_double_layers_rejects_out_of_range_copy_source(self):
         sys.argv = [
@@ -376,6 +378,71 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         with open(self.output_dir / "config.json") as f:
             new_config = json.load(f)
         self.assertEqual(new_config["num_layers"], 3)
+
+    def test_shell_script_single_mode(self):
+        """Test expand_model_layers.sh single mode copies from specified layer."""
+        script_path = self.project_root / "scripts/expand_model_layers.sh"
+        env = os.environ.copy()
+        env["MODEL_DIR"] = str(self.model_dir)
+        env["OUTPUT_DIR"] = str(self.output_dir)
+        env["ORIGINAL_LAYERS"] = "2"
+
+        result = subprocess.run(
+            ["bash", str(script_path), "single", "1"],
+            cwd=self.project_root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["num_layers"], 4)
+
+        # Verify new layers both copy from layer 1
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        self.assertTrue(torch.equal(all_weights["model.layers.2.input_layernorm.weight"], self.weights["model.layers.1.input_layernorm.weight"]))
+        self.assertTrue(torch.equal(all_weights["model.layers.3.input_layernorm.weight"], self.weights["model.layers.1.input_layernorm.weight"]))
+
+    def test_shell_script_list_mode(self):
+        """Test expand_model_layers.sh list mode with explicit copy mapping."""
+        script_path = self.project_root / "scripts/expand_model_layers.sh"
+        env = os.environ.copy()
+        env["MODEL_DIR"] = str(self.model_dir)
+        env["OUTPUT_DIR"] = str(self.output_dir)
+        env["ORIGINAL_LAYERS"] = "2"
+
+        result = subprocess.run(
+            ["bash", str(script_path), "list", "1,0"],
+            cwd=self.project_root,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr or result.stdout)
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["num_layers"], 4)
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        self.assertTrue(torch.equal(all_weights["model.layers.2.input_layernorm.weight"], self.weights["model.layers.1.input_layernorm.weight"]))
+        self.assertTrue(torch.equal(all_weights["model.layers.3.input_layernorm.weight"], self.weights["model.layers.0.input_layernorm.weight"]))
 
 if __name__ == "__main__":
     unittest.main()

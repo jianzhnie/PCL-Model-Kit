@@ -22,7 +22,7 @@ DEFAULT_TARGET_LAYERS="$((ORIGINAL_LAYERS * 2))"
 TARGET_LAYERS="${TARGET_LAYERS:-$DEFAULT_TARGET_LAYERS}"
 
 # Auto-derive output dir suffix from target layers
-OUTPUT_DIR="/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-${TARGET_LAYERS}L"
+OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat-${TARGET_LAYERS}L}"
 
 MODE="${1:-single}"
 ARG="${2:-27}"

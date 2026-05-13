@@ -196,14 +196,12 @@ class TestExpandMoeExperts(unittest.TestCase):
 
         self.assertEqual(all_weights["model.layers.0.mlp.gate.weight"].shape, (8, 16))
         self.assertEqual(all_weights["model.layers.0.mlp.gate.e_score_correction_bias"].shape, (8,))
-        torch.testing.assert_close(
-            all_weights["model.layers.0.mlp.experts.4.gate_proj.weight"],
-            torch.full((32, 16), 0.0),
-        )
-        torch.testing.assert_close(
-            all_weights["model.layers.0.mlp.experts.7.gate_proj.weight"],
-            torch.full((32, 16), 3.0),
-        )
+        # New experts 4-7 should be exact copies of 0-3
+        for i in range(4):
+            orig_key = f"model.layers.0.mlp.experts.{i}.gate_proj.weight"
+            new_key = f"model.layers.0.mlp.experts.{i+4}.gate_proj.weight"
+            self.assertTrue(torch.equal(all_weights[new_key], weights[orig_key]),
+                            f"Expert {i+4} should be an exact copy of expert {i}")
 
     def test_expand_moe_experts_shell_script_default_doubles_experts(self):
         script_path = self.project_root / "scripts/expand_moe_experts.sh"

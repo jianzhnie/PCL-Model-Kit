@@ -225,7 +225,7 @@ def tensor_nbytes(tensor: torch.Tensor) -> int:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Double model layers by duplicating existing layer weights"
+        description="Expand model layers by duplicating existing layer weights"
     )
     parser.add_argument(
         "--model_dir",
@@ -256,7 +256,7 @@ def main():
         type=str,
         default=None,
         help="Which original layer(s) to copy for the new layers. "
-             "Default: sequential (28←0, 29←1, …). "
+             "Default: sequential (new layer i copies from layer i mod N). "
              "Single int: all new layers copy from that layer. "
              "Comma list: explicit N entries, one per new layer.",
     )
