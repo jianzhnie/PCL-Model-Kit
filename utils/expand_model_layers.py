@@ -525,12 +525,14 @@ def main():
             if extra:
                 print(f"  ✗ Unexpected layers: {sorted(extra)}")
 
-        # Parameter count per layer
-        for li in sorted_layers[:3]:
-            print(f"    Layer {li}: {len(layers_found[li])} params")
-        print(f"    ...")
-        for li in sorted_layers[-3:]:
-            print(f"    Layer {li}: {len(layers_found[li])} params")
+        # Parameter count summary
+        input_params = len(index["weight_map"])
+        output_params = len(out_idx["weight_map"])
+        non_layer_out = len([p for p in out_idx["weight_map"] if get_layer_index(p) is None])
+        layer_params_out = output_params - non_layer_out
+        print(f"  Input parameters:  {input_params:,}")
+        print(f"  Output parameters: {output_params:,} ({non_layer_out:,} non-layer + {layer_params_out:,} layer)")
+        print(f"  Expansion ratio:   {output_params / input_params:.2f}x")
 
     print(f"\nDone! Output saved to: {output_dir}")
 

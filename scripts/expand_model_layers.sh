@@ -18,7 +18,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/L
 ORIGINAL_LAYERS="${ORIGINAL_LAYERS:-28}"
 
 MODE="${1:-single}"
-ARG="${2:-28}"
+ARG="${2:-27}"
 
 echo "============================================"
 echo "  Double Model Layers"
