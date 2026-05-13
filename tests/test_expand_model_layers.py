@@ -160,6 +160,111 @@ class TestDoubleHfModelLayers(unittest.TestCase):
 
         self.assertEqual(exc.exception.code, 1)
 
+    def test_double_layers_longcat_structure(self):
+        """Mimic LongCat naming: sub-indices like norm.0, norm.1, attn.0, attn.1, experts.X, mlps.X."""
+        shutil.rmtree(self.test_dir)
+        self.model_dir.mkdir(parents=True)
+
+        config = {
+            "model_type": "longcat",
+            "num_layers": 2,
+            "hidden_size": 16,
+        }
+        with open(self.model_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        # Build LongCat-style param names: each layer has norm.{0,1}, attn.{0,1}, experts.{0,1}, mlps.{0,1}
+        weights = {}
+        weights["model.embed_tokens.weight"] = torch.randn(100, 16)
+        weights["model.norm.weight"] = torch.randn(16)
+        # MTP params (should NOT be duplicated)
+        weights["model.mtp.layers.0.transformer_layer.mlp.down_proj.weight"] = torch.randn(32, 16)
+        weights["model.mtp.norm.weight"] = torch.randn(16)
+
+        for li in range(2):
+            weights[f"model.layers.{li}.input_layernorm.0.weight"] = torch.full((16,), float(li * 10))
+            weights[f"model.layers.{li}.input_layernorm.1.weight"] = torch.full((16,), float(li * 10 + 1))
+            weights[f"model.layers.{li}.post_attention_layernorm.0.weight"] = torch.full((16,), float(li * 10 + 2))
+            weights[f"model.layers.{li}.self_attn.0.q_a_proj.weight"] = torch.full((32, 16), float(li * 10 + 3))
+            weights[f"model.layers.{li}.self_attn.1.o_proj.weight"] = torch.full((16, 32), float(li * 10 + 4))
+            weights[f"model.layers.{li}.mlp.router.classifier.weight"] = torch.randn(2, 16)
+            weights[f"model.layers.{li}.mlp.router.e_score_correction_bias"] = torch.randn(2)
+            # Experts
+            for ei in range(2):
+                weights[f"model.layers.{li}.mlp.experts.{ei}.gate_proj.weight"] = torch.full((32, 16), float(li * 100 + ei))
+            # Dense MLPs
+            weights[f"model.layers.{li}.mlps.0.gate_proj.weight"] = torch.full((32, 16), float(li * 10 + 5))
+            weights[f"model.layers.{li}.mlps.1.down_proj.weight"] = torch.full((16, 32), float(li * 10 + 6))
+
+        save_file(weights, str(self.model_dir / "model.safetensors"))
+        index = {
+            "metadata": {"total_size": 0},
+            "weight_map": {k: "model.safetensors" for k in weights},
+        }
+        with open(self.model_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(index, f)
+
+        # Run: 2 → 4 layers
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+        ]
+        double_main()
+
+        # Verify config
+        with open(self.output_dir / "config.json") as f:
+            self.assertEqual(json.load(f)["num_layers"], 4)
+
+        # Load all output tensors
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            out_idx = json.load(f)
+        all_weights = {}
+        for sn in set(out_idx["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / sn)))
+
+        # Non-layer params (embed, norm, mtp) should NOT be duplicated
+        self.assertIn("model.embed_tokens.weight", all_weights)
+        self.assertIn("model.norm.weight", all_weights)
+        self.assertIn("model.mtp.layers.0.transformer_layer.mlp.down_proj.weight", all_weights)
+        self.assertIn("model.mtp.norm.weight", all_weights)
+
+        # Layer 0 → Layer 2, Layer 1 → Layer 3 (sequential)
+        # Check that duplicated layers have matching values
+        for src, dst in [(0, 2), (1, 3)]:
+            self.assertIn(f"model.layers.{dst}.input_layernorm.0.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.input_layernorm.1.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.self_attn.0.q_a_proj.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.self_attn.1.o_proj.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.mlp.router.classifier.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.mlp.router.e_score_correction_bias", all_weights)
+            self.assertIn(f"model.layers.{dst}.mlp.experts.0.gate_proj.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.mlp.experts.1.gate_proj.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.mlps.0.gate_proj.weight", all_weights)
+            self.assertIn(f"model.layers.{dst}.mlps.1.down_proj.weight", all_weights)
+
+            # Verify values match source layer
+            torch.testing.assert_close(
+                all_weights[f"model.layers.{dst}.input_layernorm.0.weight"],
+                torch.full((16,), float(src * 10)),
+            )
+            torch.testing.assert_close(
+                all_weights[f"model.layers.{dst}.self_attn.0.q_a_proj.weight"],
+                torch.full((32, 16), float(src * 10 + 3)),
+            )
+            torch.testing.assert_close(
+                all_weights[f"model.layers.{dst}.mlp.experts.0.gate_proj.weight"],
+                torch.full((32, 16), float(src * 100 + 0)),
+            )
+            torch.testing.assert_close(
+                all_weights[f"model.layers.{dst}.mlps.0.gate_proj.weight"],
+                torch.full((32, 16), float(src * 10 + 5)),
+            )
+
+        # Count: original non-layer(=4) + layer params(2 layers * 11 params per layer * 2 = 44) = 48
+        self.assertEqual(len(out_idx["weight_map"]), 48)
+
     def test_expand_model_layers_shell_script(self):
         script_path = self.project_root / "scripts/expand_model_layers.sh"
         env = os.environ.copy()
