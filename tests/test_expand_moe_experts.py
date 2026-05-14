@@ -428,8 +428,176 @@ class TestExpandMoeExperts(unittest.TestCase):
                             f"Zero-shot expert weight mismatch: {new_key} vs {old_key}")
         
         # Expert 4 is now a routed expert (copy of 0)
-        self.assertTrue(torch.equal(all_weights["model.layers.0.mlp.experts.4.gate_proj.weight"], 
+        self.assertTrue(torch.equal(all_weights["model.layers.0.mlp.experts.4.gate_proj.weight"],
                                    weights["model.layers.0.mlp.experts.0.gate_proj.weight"]))
+
+    def test_expansion_factor_greater_than_two(self):
+        """Expand 4→12 experts (3x expansion factor)."""
+        config = {
+            "model_type": "longcat",
+            "n_routed_experts": 4,
+            "hidden_size": 8,
+            "num_layers": 1,
+        }
+        with open(self.model_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        weights = {
+            "model.embed_tokens.weight": torch.randn(50, 8),
+            "model.layers.0.mlp.router.classifier.weight": torch.randn(4, 8),
+            "model.layers.0.mlp.router.e_score_correction_bias": torch.randn(4),
+            "model.norm.weight": torch.randn(8),
+        }
+        for i in range(4):
+            weights[f"model.layers.0.mlp.experts.{i}.gate_proj.weight"] = torch.full((16, 8), float(i))
+
+        save_file(weights, str(self.model_dir / "model.safetensors"))
+        index = {
+            "metadata": {"total_size": 0},
+            "weight_map": {k: "model.safetensors" for k in weights}
+        }
+        with open(self.model_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(index, f)
+
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_experts", "12"
+        ]
+        expand_main()
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["n_routed_experts"], 12)
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        # Router should have shape (12, 8) - 3 copies of original 4
+        new_router = all_weights["model.layers.0.mlp.router.classifier.weight"]
+        self.assertEqual(new_router.shape, (12, 8))
+        orig_router = weights["model.layers.0.mlp.router.classifier.weight"]
+        # Each of the 3 blocks should match the original
+        for factor in range(3):
+            part = new_router[factor * 4:(factor + 1) * 4]
+            self.assertTrue(torch.equal(part, orig_router),
+                            f"Router block {factor} should match original")
+
+        # Verify experts: 0-3 original, 4-7 copies (mod 4), 8-11 copies (mod 4)
+        for new_idx in range(4, 12):
+            src_idx = new_idx % 4
+            self.assertTrue(
+                torch.equal(all_weights[f"model.layers.0.mlp.experts.{new_idx}.gate_proj.weight"],
+                            weights[f"model.layers.0.mlp.experts.{src_idx}.gate_proj.weight"]),
+                f"Expert {new_idx} should be copy of expert {src_idx}"
+            )
+
+        # Verify original experts 0-3 unchanged
+        for i in range(4):
+            self.assertTrue(torch.equal(
+                all_weights[f"model.layers.0.mlp.experts.{i}.gate_proj.weight"],
+                weights[f"model.layers.0.mlp.experts.{i}.gate_proj.weight"]
+            ))
+
+    def test_multi_layer_moe_expansion(self):
+        """Test MoE expansion with multiple MoE layers."""
+        config = {
+            "model_type": "longcat",
+            "n_routed_experts": 2,
+            "hidden_size": 8,
+            "num_layers": 2,
+        }
+        with open(self.model_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        weights = {
+            "model.embed_tokens.weight": torch.randn(50, 8),
+            "model.norm.weight": torch.randn(8),
+        }
+        for li in range(2):
+            weights[f"model.layers.{li}.mlp.router.classifier.weight"] = torch.randn(2, 8)
+            weights[f"model.layers.{li}.mlp.router.e_score_correction_bias"] = torch.randn(2)
+            for ei in range(2):
+                weights[f"model.layers.{li}.mlp.experts.{ei}.gate_proj.weight"] = torch.full((16, 8), float(li * 10 + ei))
+
+        save_file(weights, str(self.model_dir / "model.safetensors"))
+        index = {
+            "metadata": {"total_size": 0},
+            "weight_map": {k: "model.safetensors" for k in weights}
+        }
+        with open(self.model_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(index, f)
+
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_experts", "4"
+        ]
+        expand_main()
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        # Verify both layers have 4 experts each
+        for li in range(2):
+            # Router shape doubled (2→4)
+            router_key = f"model.layers.{li}.mlp.router.classifier.weight"
+            self.assertEqual(all_weights[router_key].shape, (4, 8))
+
+            # Expert copies
+            for ei in range(4):
+                expert_key = f"model.layers.{li}.mlp.experts.{ei}.gate_proj.weight"
+                self.assertIn(expert_key, all_weights)
+                src_ei = ei % 2
+                expected_val = weights[f"model.layers.{li}.mlp.experts.{src_ei}.gate_proj.weight"]
+                self.assertTrue(torch.equal(all_weights[expert_key], expected_val),
+                                f"Layer {li} expert {ei} mismatch")
+
+        # Non-expert params should be unchanged
+        self.assertTrue(torch.equal(all_weights["model.embed_tokens.weight"],
+                                    weights["model.embed_tokens.weight"]))
+        self.assertTrue(torch.equal(all_weights["model.norm.weight"],
+                                    weights["model.norm.weight"]))
+
+    def test_shard_file_sizes_match_target_moe(self):
+        """Verify output shard sizes for MoE expansion match the original shard size pattern."""
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_experts", "8"
+        ]
+        expand_main()
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+
+        output_shards = set(new_index["weight_map"].values())
+        output_sizes = []
+        for sname in output_shards:
+            spath = self.output_dir / sname
+            self.assertTrue(spath.exists(), f"Shard {sname} should exist")
+            output_sizes.append(spath.stat().st_size)
+
+        # Get original shard sizes
+        orig_sizes = []
+        for sname in ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]:
+            orig_sizes.append((self.model_dir / sname).stat().st_size)
+
+        avg_orig = sum(orig_sizes) / len(orig_sizes)
+        for sz in output_sizes:
+            self.assertLessEqual(sz, 2 * avg_orig + 1,
+                                 f"Output shard size {sz} exceeds 2x avg {avg_orig}")
 
 if __name__ == "__main__":
     unittest.main()

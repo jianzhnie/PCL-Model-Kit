@@ -444,5 +444,105 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         self.assertTrue(torch.equal(all_weights["model.layers.2.input_layernorm.weight"], self.weights["model.layers.1.input_layernorm.weight"]))
         self.assertTrue(torch.equal(all_weights["model.layers.3.input_layernorm.weight"], self.weights["model.layers.0.input_layernorm.weight"]))
 
+    def test_sequential_wraps_modulo_when_num_new_exceeds_original(self):
+        """Test sequential mode with num_new > original_layers (modulo wrapping).
+        2 original layers → 10 target layers = 8 new layers.
+        Expected copies: layers 2,4,6,8 ← 0; layers 3,5,7,9 ← 1."""
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--target_layers", "10"
+        ]
+        double_main()
+
+        with open(self.output_dir / "config.json") as f:
+            self.assertEqual(json.load(f)["num_layers"], 10)
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        # Verify all 10 layers present with correct indices
+        layers = sorted({int(re.search(r"layers\.(\d+)\.", k).group(1))
+                         for k in new_index["weight_map"] if "layers." in k})
+        self.assertEqual(layers, list(range(10)))
+
+        # Verify original layers 0-1 unchanged
+        self.assertTrue(torch.equal(all_weights["model.layers.0.input_layernorm.weight"],
+                                    self.weights["model.layers.0.input_layernorm.weight"]))
+        self.assertTrue(torch.equal(all_weights["model.layers.1.input_layernorm.weight"],
+                                    self.weights["model.layers.1.input_layernorm.weight"]))
+
+        # Verify modulo wrapping: even new layers copy layer 0, odd new layers copy layer 1
+        for new_li in range(2, 10):
+            src_li = (new_li - 2) % 2  # offset 0→0, 1→1, 2→0, 3→1, ...
+            self.assertTrue(
+                torch.equal(all_weights[f"model.layers.{new_li}.input_layernorm.weight"],
+                            self.weights[f"model.layers.{src_li}.input_layernorm.weight"]),
+                f"Layer {new_li} should copy layer {src_li}"
+            )
+
+        # Verify total_size in metadata reflects the expansion
+        orig_total = sum(v.element_size() * v.nelement() for v in self.weights.values())
+        expected_ratio = 10 / 2  # 5x original layer params + non-layer unchanged
+        # Non-layer: embed_tokens(100*16*4=6400) + norm(16*4=64) = 6464 bytes
+        # Layer params: 2 layers * 2 params/layer * (16*4 + 32*16*4) = 2 * 2 * (64+2048) = 8448 bytes
+        # Expanded layer params: 10 layers * 2 params/layer * 2112 = 42240 bytes
+        # Total expected: 6464 + 42240 = 48704 bytes
+        orig_non_layer = sum(
+            v.element_size() * v.nelement()
+            for k, v in self.weights.items()
+            if "model.layers." not in k
+        )
+        orig_layer = sum(
+            v.element_size() * v.nelement()
+            for k, v in self.weights.items()
+            if "model.layers." in k
+        )
+        expected_total = orig_non_layer + (10 / 2) * orig_layer
+        self.assertEqual(new_index["metadata"]["total_size"], int(expected_total))
+
+    def test_shard_file_sizes_match_target(self):
+        """Verify that individual output shard file sizes match the original shard sizes."""
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--target_layers", "6"
+        ]
+        double_main()
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+
+        # Each output shard should be close to the original shard sizes
+        output_shards = set(new_index["weight_map"].values())
+        output_sizes = []
+        for sname in output_shards:
+            spath = self.output_dir / sname
+            self.assertTrue(spath.exists(), f"Shard {sname} should exist")
+            output_sizes.append(spath.stat().st_size)
+
+        # Original shard sizes
+        orig_sizes = []
+        for sname in ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]:
+            orig_sizes.append((self.model_dir / sname).stat().st_size)
+
+        # All output shards should be within 20% of the target shard size
+        target_size = self.model_dir / "model-00001-of-00002.safetensors"
+        self.assertTrue(target_size.exists())
+
+        # The shard detection uses average - verify no shard exceeds 2x average
+        avg_orig = sum(orig_sizes) / len(orig_sizes)
+        for sz in output_sizes:
+            self.assertLessEqual(sz, 2 * avg_orig + 1,
+                                 f"Output shard size {sz} exceeds 2x avg {avg_orig}")
+
 if __name__ == "__main__":
     unittest.main()

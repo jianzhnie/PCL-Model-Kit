@@ -45,7 +45,9 @@ fi
 COPY_ARGS=()
 case "$MODE" in
     seq)
-        echo "  → Sequential: layer ${ORIGINAL_LAYERS}←0, $((ORIGINAL_LAYERS+1))←1, …, $((TARGET_LAYERS-1))←$((NUM_NEW-1))"
+        LAST_NEW_OFFSET=$((NUM_NEW - 1))
+LAST_SRC=$((LAST_NEW_OFFSET % ORIGINAL_LAYERS))
+echo "  → Sequential: new layers [0..${LAST_NEW_OFFSET}] copy from (i mod ${ORIGINAL_LAYERS})"
         ;;
     single)
         if [ -z "$ARG" ]; then
