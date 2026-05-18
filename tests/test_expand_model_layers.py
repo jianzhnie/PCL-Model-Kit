@@ -488,8 +488,6 @@ class TestDoubleHfModelLayers(unittest.TestCase):
             )
 
         # Verify total_size in metadata reflects the expansion
-        orig_total = sum(v.element_size() * v.nelement() for v in self.weights.values())
-        expected_ratio = 10 / 2  # 5x original layer params + non-layer unchanged
         # Non-layer: embed_tokens(100*16*4=6400) + norm(16*4=64) = 6464 bytes
         # Layer params: 2 layers * 2 params/layer * (16*4 + 32*16*4) = 2 * 2 * (64+2048) = 8448 bytes
         # Expanded layer params: 10 layers * 2 params/layer * 2112 = 42240 bytes
@@ -543,6 +541,93 @@ class TestDoubleHfModelLayers(unittest.TestCase):
         for sz in output_sizes:
             self.assertLessEqual(sz, 2 * avg_orig + 1,
                                  f"Output shard size {sz} exceeds 2x avg {avg_orig}")
+
+    def test_target_layers_equals_original_rejects(self):
+        """Test that target_layers == original_layers is rejected."""
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--target_layers", "2",
+        ]
+        with self.assertRaises(SystemExit) as exc:
+            double_main()
+        self.assertEqual(exc.exception.code, 1)
+
+    def test_target_layers_less_than_original_rejects(self):
+        """Test that target_layers < original_layers is rejected."""
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--target_layers", "1",
+        ]
+        with self.assertRaises(SystemExit) as exc:
+            double_main()
+        self.assertEqual(exc.exception.code, 1)
+
+    def test_explicit_seq_copy_source(self):
+        """Test that --copy_source seq explicitly works same as default."""
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--target_layers", "4",
+            "--copy_source", "seq",
+        ]
+        double_main()
+
+        with open(self.output_dir / "config.json") as f:
+            self.assertEqual(json.load(f)["num_layers"], 4)
+
+        with open(self.output_dir / "model.safetensors.index.json") as f:
+            new_index = json.load(f)
+        all_weights = {}
+        for shard_name in set(new_index["weight_map"].values()):
+            all_weights.update(load_file(str(self.output_dir / shard_name)))
+
+        # Same as sequential: layer 2 copies 0, layer 3 copies 1
+        self.assertTrue(torch.equal(all_weights["model.layers.2.input_layernorm.weight"],
+                                    self.weights["model.layers.0.input_layernorm.weight"]))
+        self.assertTrue(torch.equal(all_weights["model.layers.3.input_layernorm.weight"],
+                                    self.weights["model.layers.1.input_layernorm.weight"]))
+
+    def test_list_mode_out_of_range_rejects(self):
+        """Test that out-of-range source in list mode is rejected."""
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+            "--copy_source", "0,5",  # 5 is out of range for 2-layer model
+        ]
+        with self.assertRaises(SystemExit) as exc:
+            double_main()
+        self.assertEqual(exc.exception.code, 1)
+
+    def test_auxiliary_files_copied(self):
+        """Verify non-weight files (tokenizer, etc.) are copied to output."""
+        # Create a dummy tokenizer file
+        with open(self.model_dir / "tokenizer.json", "w") as f:
+            json.dump({"dummy": True}, f)
+        with open(self.model_dir / "README.md", "w") as f:
+            f.write("# Test Model\n")
+
+        sys.argv = [
+            "expand_model_layers.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--original_layers", "2",
+        ]
+        double_main()
+
+        self.assertTrue((self.output_dir / "tokenizer.json").exists())
+        self.assertTrue((self.output_dir / "README.md").exists())
+        with open(self.output_dir / "tokenizer.json") as f:
+            self.assertEqual(json.load(f), {"dummy": True})
 
 if __name__ == "__main__":
     unittest.main()

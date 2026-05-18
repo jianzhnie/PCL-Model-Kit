@@ -367,7 +367,6 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ROUTER_SUFFIXES, wor
         ]
 
     target_total_experts = exp_experts + exp_zero
-    orig_total_experts = orig_experts + orig_zero
 
     for layer_idx in exp_experts_by_layer:
         # Check expert indices
@@ -584,6 +583,9 @@ def main():
             router_suffixes=router_suffixes,
             workers=args.workers,
         )
+
+    orig_loader.close()
+    exp_loader.close()
 
     if mismatches:
         print(f"\n❌ Verification FAILED with {len(mismatches)} mismatches!")

@@ -599,5 +599,30 @@ class TestExpandMoeExperts(unittest.TestCase):
             self.assertLessEqual(sz, 2 * avg_orig + 1,
                                  f"Output shard size {sz} exceeds 2x avg {avg_orig}")
 
+    def test_default_doubles_experts(self):
+        """Test that omitting --target_experts defaults to doubling."""
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+        ]
+        expand_main()
+
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["n_routed_experts"], 8)  # 4 * 2
+
+    def test_zero_target_experts_rejected(self):
+        """Test that --target_experts 0 is rejected (division by zero)."""
+        sys.argv = [
+            "expand_moe_experts.py",
+            "--model_dir", str(self.model_dir),
+            "--output_dir", str(self.output_dir),
+            "--target_experts", "0",
+        ]
+        with self.assertRaises(SystemExit) as exc:
+            expand_main()
+        self.assertEqual(exc.exception.code, 1)
+
 if __name__ == "__main__":
     unittest.main()

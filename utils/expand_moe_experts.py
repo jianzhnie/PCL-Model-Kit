@@ -263,12 +263,21 @@ def main():
 
     total_routed = original_experts + zero_expert_num
 
-    target_experts = args.target_experts if args.target_experts else original_experts * 2
-    expansion_factor = target_experts // original_experts
+    target_experts = args.target_experts if args.target_experts is not None else original_experts * 2
 
     if target_experts % original_experts != 0:
         print(f"ERROR: Target experts ({target_experts}) must be a multiple of original ({original_experts})")
         sys.exit(1)
+
+    if target_experts < original_experts:
+        print(
+            f"ERROR: target_experts ({target_experts}) must be greater than "
+            f"original_experts ({original_experts}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    expansion_factor = target_experts // original_experts
 
     print(f"Expanding experts: {original_experts} -> {target_experts} (factor: {expansion_factor})")
     if zero_expert_num > 0:

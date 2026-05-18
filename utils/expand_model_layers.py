@@ -282,7 +282,7 @@ def main():
     shard_files = sorted(set(index["weight_map"].values()))
 
     # ── Determine target layers ──────────────────────────────────────────
-    target_layers = args.target_layers if args.target_layers else original_layers * 2
+    target_layers = args.target_layers if args.target_layers is not None else original_layers * 2
     num_new = target_layers - original_layers
 
     if num_new <= 0:
