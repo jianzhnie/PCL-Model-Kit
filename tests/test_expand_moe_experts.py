@@ -292,25 +292,26 @@ class TestExpandMoeExperts(unittest.TestCase):
         with open(self.output_dir / "config.json") as f:
             new_config = json.load(f)
         self.assertEqual(new_config["n_routed_experts"], 8)
-        self.assertEqual(new_config["zero_expert_num"], 2)
+        self.assertEqual(new_config["zero_expert_num"], 4)  # 2 * 2 = 4 (doubled)
 
         with open(self.output_dir / "model.safetensors.index.json") as f:
             new_index = json.load(f)
-        
+
         all_weights = {}
         for shard_name in set(new_index["weight_map"].values()):
             all_weights.update(load_file(str(self.output_dir / shard_name)))
-        
-        # New router shape: 8 (real) + 2 (zero) = 10
-        self.assertEqual(all_weights["model.layers.0.mlp.router.classifier.weight"].shape, (10, 16))
-        self.assertEqual(all_weights["model.layers.0.mlp.router.e_score_correction_bias"].shape, (10,))
 
-        # Verify router content: [real, real, zero]
+        # New router shape: 8 (real) + 4 (zero) = 12
+        self.assertEqual(all_weights["model.layers.0.mlp.router.classifier.weight"].shape, (12, 16))
+        self.assertEqual(all_weights["model.layers.0.mlp.router.e_score_correction_bias"].shape, (12,))
+
+        # Verify router content: [real, real, zero, zero]
         orig_router = weights["model.layers.0.mlp.router.classifier.weight"]
         new_router = all_weights["model.layers.0.mlp.router.classifier.weight"]
-        torch.testing.assert_close(new_router[:4], orig_router[:4])   # First real copy
-        torch.testing.assert_close(new_router[4:8], orig_router[:4])  # Second real copy
-        torch.testing.assert_close(new_router[8:], orig_router[4:])   # Zero experts preserved at end
+        torch.testing.assert_close(new_router[:4], orig_router[:4])     # First real copy
+        torch.testing.assert_close(new_router[4:8], orig_router[:4])    # Second real copy
+        torch.testing.assert_close(new_router[8:10], orig_router[4:])   # First zero copy
+        torch.testing.assert_close(new_router[10:12], orig_router[4:])  # Second zero copy
 
     def test_target_topk_updates_config(self):
         sys.argv = [
@@ -410,23 +411,35 @@ class TestExpandMoeExperts(unittest.TestCase):
         expand_main()
 
         # 4. Verify
+        with open(self.output_dir / "config.json") as f:
+            new_config = json.load(f)
+        self.assertEqual(new_config["zero_expert_num"], 4)  # 2 * 2 = 4 (doubled)
+
         with open(self.output_dir / "model.safetensors.index.json") as f:
             new_index = json.load(f)
-        
+
         all_weights = {}
         for shard_name in set(new_index["weight_map"].values()):
             all_weights.update(load_file(str(self.output_dir / shard_name)))
-        
+
         # Original zero-shot experts (4, 5) should be moved to (8, 9)
         # because routed experts expanded from 4 to 8.
-        # Check consistency: all_weights[new_key] must be EXACTLY weights[old_key]
+        # New zero-expert copies should be at (10, 11).
         for old_idx, new_idx in [(4, 8), (5, 9)]:
             old_key = f"model.layers.0.mlp.experts.{old_idx}.gate_proj.weight"
             new_key = f"model.layers.0.mlp.experts.{new_idx}.gate_proj.weight"
             self.assertIn(new_key, all_weights)
-            self.assertTrue(torch.equal(all_weights[new_key], weights[old_key]), 
+            self.assertTrue(torch.equal(all_weights[new_key], weights[old_key]),
                             f"Zero-shot expert weight mismatch: {new_key} vs {old_key}")
-        
+
+        # New zero-expert copies (10, 11) should be copies of original (4, 5)
+        for old_idx, copy_idx in [(4, 10), (5, 11)]:
+            old_key = f"model.layers.0.mlp.experts.{old_idx}.gate_proj.weight"
+            copy_key = f"model.layers.0.mlp.experts.{copy_idx}.gate_proj.weight"
+            self.assertIn(copy_key, all_weights)
+            self.assertTrue(torch.equal(all_weights[copy_key], weights[old_key]),
+                            f"Zero-expert copy mismatch: {copy_key} vs {old_key}")
+
         # Expert 4 is now a routed expert (copy of 0)
         self.assertTrue(torch.equal(all_weights["model.layers.0.mlp.experts.4.gate_proj.weight"],
                                    weights["model.layers.0.mlp.experts.0.gate_proj.weight"]))

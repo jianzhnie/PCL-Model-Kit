@@ -275,9 +275,11 @@ class TestWeightVerification(unittest.TestCase):
                     index=_make_index({k: "model.safetensors" for k in orig}),
                     config={"n_routed_experts": 2, "zero_expert_num": 1})
 
-        exp_cfg = {"n_routed_experts": 4, "zero_expert_num": 1}
+        exp_cfg = {"n_routed_experts": 4, "zero_expert_num": 2}  # zero doubled
+        # Router: [real, real, zero, zero] = 2 copies of real + 2 copies of zero
         router_exp = torch.cat([
-            router_orig[:2], router_orig[:2], router_orig[2:]
+            router_orig[:2], router_orig[:2],   # real × 2
+            router_orig[2:], router_orig[2:],   # zero × 2
         ], dim=0).clone()
         exp = {
             "model.layers.0.mlp.experts.0.w": orig["model.layers.0.mlp.experts.0.w"].clone(),
@@ -285,6 +287,7 @@ class TestWeightVerification(unittest.TestCase):
             "model.layers.0.mlp.experts.2.w": orig["model.layers.0.mlp.experts.0.w"].clone(),
             "model.layers.0.mlp.experts.3.w": orig["model.layers.0.mlp.experts.1.w"].clone(),
             "model.layers.0.mlp.experts.4.w": orig["model.layers.0.mlp.experts.2.w"].clone(),
+            "model.layers.0.mlp.experts.5.w": orig["model.layers.0.mlp.experts.2.w"].clone(),
             "model.layers.0.mlp.router.classifier.weight": router_exp.clone(),
         }
         _save_model(self.exp_dir, exp,
@@ -384,17 +387,18 @@ class TestWeightVerification(unittest.TestCase):
 
     # ── verify_experts — structural checks ───────────────────────────────
 
-    def test_experts_zero_count_mismatch(self):
-        """Zero expert count changed across expansion."""
+    def test_experts_zero_count_not_properly_doubled(self):
+        """Zero expert count should be orig_zero * expansion_factor."""
         config_o = {"n_routed_experts": 2, "zero_expert_num": 1}
-        config_e = {"n_routed_experts": 4, "zero_expert_num": 2}
+        # expansion_factor = 2, so zero_expert_num should be 2, not 3
+        config_e = {"n_routed_experts": 4, "zero_expert_num": 3}
         _save_model(self.orig_dir, {}, config=config_o)
         _save_model(self.exp_dir, {}, config=config_e)
         ol = self._get_loader(self.orig_dir)
         el = self._get_loader(self.exp_dir)
         m = verify_experts(ol, el)
+        # Should detect mismatch because zero count 3 != 1 * 2 = 2
         self.assertGreater(len(m), 0)
-        self.assertTrue(any("Zero expert count mismatch" in x for x in m))
 
     def test_experts_source_expert_missing(self):
         """Expanded model expert points to missing source expert."""

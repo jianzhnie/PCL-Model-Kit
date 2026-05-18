@@ -278,10 +278,12 @@ def main():
         sys.exit(1)
 
     expansion_factor = target_experts // original_experts
+    target_zero_expert_num = zero_expert_num * expansion_factor
 
     print(f"Expanding experts: {original_experts} -> {target_experts} (factor: {expansion_factor})")
     if zero_expert_num > 0:
-        print(f"Zero experts: {zero_expert_num} (identity pass-through, router dim: {total_routed})")
+        print(f"Zero experts: {zero_expert_num} -> {target_zero_expert_num} "
+              f"(router dim: {total_routed} -> {target_experts + target_zero_expert_num})")
 
     shard_files = sorted(set(index["weight_map"].values()))
     experts_by_layer = validate_expert_layout(index, original_experts, zero_expert_num)
@@ -294,6 +296,10 @@ def main():
         if key in config:
             config[key] = target_experts
             updated_keys.append(key)
+
+    if zero_expert_num > 0:
+        config["zero_expert_num"] = target_zero_expert_num
+        updated_keys.append("zero_expert_num")
 
     if args.target_topk is not None:
         topk_updated = False
@@ -339,10 +345,9 @@ def main():
 
             if is_router_param(key):
                 validate_router_shape(key, shape, total_routed)
-                # Router expands: real experts (×expansion_factor) + zero experts (unchanged)
-                # New size = nbytes * (target_experts + zero_expert_num) / total_routed
+                # Router expands: real experts (×expansion_factor) + zero experts (×expansion_factor)
                 bytes_per_expert = nbytes // total_routed
-                new_nbytes = bytes_per_expert * (target_experts + zero_expert_num)
+                new_nbytes = bytes_per_expert * (target_experts + target_zero_expert_num)
                 if new_nbytes + current_bytes > target_shard_size and current_bytes > 0:
                     num_output_shards += 1
                     current_bytes = 0
@@ -358,13 +363,24 @@ def main():
                 total_output_bytes += nbytes
                 total_original += 1
 
-                for _ in source_to_targets.get(expert_idx, []):
-                    if nbytes + current_bytes > target_shard_size and current_bytes > 0:
-                        num_output_shards += 1
-                        current_bytes = 0
-                    current_bytes += nbytes
-                    total_output_bytes += nbytes
-                    total_duplicated += 1
+                if expert_idx < original_experts:
+                    # Routed expert copies
+                    for _ in source_to_targets.get(expert_idx, []):
+                        if nbytes + current_bytes > target_shard_size and current_bytes > 0:
+                            num_output_shards += 1
+                            current_bytes = 0
+                        current_bytes += nbytes
+                        total_output_bytes += nbytes
+                        total_duplicated += 1
+                elif zero_expert_num > 0:
+                    # Zero-expert copies (expansion_factor - 1 additional copies)
+                    for _ in range(expansion_factor - 1):
+                        if nbytes + current_bytes > target_shard_size and current_bytes > 0:
+                            num_output_shards += 1
+                            current_bytes = 0
+                        current_bytes += nbytes
+                        total_output_bytes += nbytes
+                        total_duplicated += 1
             else:
                 if nbytes + current_bytes > target_shard_size and current_bytes > 0:
                     num_output_shards += 1
@@ -412,14 +428,14 @@ def main():
                 if is_router_param(key):
                     validate_router_shape(key, list(tensor.shape), total_routed)
                     # Router tensor stores weights for both real experts and
-                    # zero (identity) experts. Split along dim=0, expand only the
-                    # real-expert portion, then reattach the zero-expert portion
-                    # unchanged so its count stays the same.
+                    # zero (identity) experts. Split along dim=0, expand both
+                    # the real-expert and zero-expert portions.
                     if zero_expert_num > 0:
                         real_part = tensor[:original_experts]
                         zero_part = tensor[original_experts:]
                         expanded_real = torch.cat([real_part] * expansion_factor, dim=0)
-                        new_tensor = torch.cat([expanded_real, zero_part], dim=0)
+                        expanded_zero = torch.cat([zero_part] * expansion_factor, dim=0)
+                        new_tensor = torch.cat([expanded_real, expanded_zero], dim=0)
                     else:
                         new_tensor = torch.cat([tensor] * expansion_factor, dim=0)
                     new_nbytes = tensor_nbytes(new_tensor)
@@ -444,13 +460,25 @@ def main():
                             current_tensors[new_key] = tensor.clone()
                             current_bytes += nbytes
                     else:
-                        # Zero-shot expert: shift to new indices after expanded routed experts
-                        new_expert_idx = expert_idx + (target_experts - original_experts)
-                        new_key = f"model.layers.{layer_idx}.mlp.experts.{new_expert_idx}.{rest}"
+                        # Zero-expert: shift to new indices after expanded routed experts,
+                        # and create additional copies for expanded zero-expert slots.
+                        base_new_idx = expert_idx - original_experts + target_experts
+                        # Original zero-expert at shifted position
+                        new_key = f"model.layers.{layer_idx}.mlp.experts.{base_new_idx}.{rest}"
                         if current_bytes + nbytes > target_shard_size and current_tensors:
                             flush_shard()
                         current_tensors[new_key] = tensor
                         current_bytes += nbytes
+
+                        # Additional copies for expanded zero-expert slots
+                        zero_offset = expert_idx - original_experts
+                        for f in range(1, expansion_factor):
+                            copy_idx = target_experts + zero_offset + f * zero_expert_num
+                            copy_key = f"model.layers.{layer_idx}.mlp.experts.{copy_idx}.{rest}"
+                            if current_bytes + nbytes > target_shard_size and current_tensors:
+                                flush_shard()
+                            current_tensors[copy_key] = tensor.clone()
+                            current_bytes += nbytes
                 
                 else:
                     # Regular param
@@ -500,7 +528,7 @@ def main():
 
     print("\nVerification:")
     print(f"  Expert count key used: {expert_count_key or 'n_routed_experts'}")
-    print(f"  Config experts: {target_experts} (real) + {zero_expert_num} (zero) = {target_experts + zero_expert_num} total routed")
+    print(f"  Config experts: {target_experts} (real) + {target_zero_expert_num} (zero) = {target_experts + target_zero_expert_num} total routed")
     if args.target_topk is not None:
         print(f"  Topk: {args.target_topk}")
     print(f"  Output shards: {num_output_shards}")

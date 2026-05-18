@@ -318,14 +318,17 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ROUTER_SUFFIXES, wor
     )
     print(f"           Zero experts: {orig_zero} (orig), {exp_zero} (exp)")
 
-    if orig_zero != exp_zero:
-        return [f"Zero expert count mismatch: {orig_zero} vs {exp_zero}"]
-
     expansion_factor = exp_experts // orig_experts
     if exp_experts % orig_experts != 0:
         return [
             f"Expanded expert count ({exp_experts}) is not a multiple "
             f"of original ({orig_experts})"
+        ]
+
+    if orig_zero > 0 and exp_zero != orig_zero * expansion_factor:
+        return [
+            f"Zero expert count mismatch: expected {orig_zero * expansion_factor} "
+            f"(orig {orig_zero} × factor {expansion_factor}), got {exp_zero}"
         ]
 
     # ── Structural pre-check ──────────────────────────────────────────────
@@ -414,7 +417,7 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ROUTER_SUFFIXES, wor
                             f"Source router missing: {exp_name}")
                         continue
 
-                    expected_dim0 = orig_experts * expansion_factor + orig_zero
+                    expected_dim0 = orig_experts * expansion_factor + orig_zero * expansion_factor
                     if t_exp.shape[0] != expected_dim0:
                         local_mismatches.append(
                             f"Router shape mismatch: {exp_name} "
@@ -436,10 +439,13 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ROUTER_SUFFIXES, wor
                     if orig_zero > 0:
                         zero_orig = t_orig[orig_experts:]
                         zero_exp = t_exp[exp_experts:]
-                        if not torch.equal(zero_orig, zero_exp):
-                            local_mismatches.append(
-                                f"Router value mismatch (zero part): {exp_name}"
-                            )
+                        for f in range(expansion_factor):
+                            part = zero_exp[f * orig_zero:(f + 1) * orig_zero]
+                            if not torch.equal(zero_orig, part):
+                                local_mismatches.append(
+                                    f"Router value mismatch "
+                                    f"(zero part factor {f}): {exp_name}"
+                                )
                     continue
 
                 # 2. Expert parameters
@@ -454,7 +460,8 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ROUTER_SUFFIXES, wor
                             f"model.layers.{l_idx}.mlp.experts.{src_e_idx}.{rest}"
                         )
                     else:
-                        src_e_idx = e_idx - (exp_experts - orig_experts)
+                        # Zero-expert: source is the corresponding original zero-expert
+                        src_e_idx = orig_experts + ((e_idx - exp_experts) % orig_zero)
                         src_name = (
                             f"model.layers.{l_idx}.mlp.experts.{src_e_idx}.{rest}"
                         )
