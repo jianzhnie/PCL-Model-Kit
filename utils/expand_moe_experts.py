@@ -68,6 +68,11 @@ def build_expert_target_map(
     return dict(targets)
 
 
+def make_expert_key(layer_idx: int, expert_idx: int, rest: str) -> str:
+    """Construct an expert parameter key from its components."""
+    return f"model.layers.{layer_idx}.mlp.experts.{expert_idx}.{rest}"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Validation
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -443,6 +448,11 @@ def main():
         current_tensors.clear()
         current_bytes = 0
 
+    def maybe_flush(nbytes: int):
+        nonlocal current_bytes, current_tensors
+        if current_bytes + nbytes > target_shard_size and current_tensors:
+            flush_shard()
+
     print("\nPass 2/2: Processing and writing tensors...")
     for shard_file in tqdm(shard_files, desc="Input shards"):
         with safe_open(str(model_dir / shard_file), framework="pt", device="cpu") as sf:
@@ -457,8 +467,7 @@ def main():
                         expansion_factor, args.noise_scale,
                     )
                     new_nbytes = tensor_nbytes(new_tensor)
-                    if current_bytes + new_nbytes > target_shard_size and current_tensors:
-                        flush_shard()
+                    maybe_flush(new_nbytes)
                     current_tensors[key] = new_tensor
                     current_bytes += new_nbytes
 
@@ -468,31 +477,27 @@ def main():
                         tensor, original_experts, zero_expert_num, expansion_factor,
                     )
                     new_nbytes = tensor_nbytes(new_tensor)
-                    if current_bytes + new_nbytes > target_shard_size and current_tensors:
-                        flush_shard()
+                    maybe_flush(new_nbytes)
                     current_tensors[key] = new_tensor
                     current_bytes += new_nbytes
 
                 elif info := get_expert_info(key):
                     layer_idx, expert_idx, rest = info
                     if expert_idx < original_experts:
-                        if current_bytes + nbytes > target_shard_size and current_tensors:
-                            flush_shard()
+                        maybe_flush(nbytes)
                         current_tensors[key] = tensor
                         current_bytes += nbytes
 
                         for new_expert_idx in source_to_targets.get(expert_idx, []):
-                            new_key = f"model.layers.{layer_idx}.mlp.experts.{new_expert_idx}.{rest}"
-                            if current_bytes + nbytes > target_shard_size and current_tensors:
-                                flush_shard()
+                            new_key = make_expert_key(layer_idx, new_expert_idx, rest)
+                            maybe_flush(nbytes)
                             current_tensors[new_key] = tensor.clone()
                             current_bytes += nbytes
                     else:
                         # Zero-expert: shift to new indices after expanded routed experts
                         base_new_idx = expert_idx - original_experts + target_experts
-                        new_key = f"model.layers.{layer_idx}.mlp.experts.{base_new_idx}.{rest}"
-                        if current_bytes + nbytes > target_shard_size and current_tensors:
-                            flush_shard()
+                        new_key = make_expert_key(layer_idx, base_new_idx, rest)
+                        maybe_flush(nbytes)
                         current_tensors[new_key] = tensor
                         current_bytes += nbytes
 
@@ -500,15 +505,13 @@ def main():
                         zero_offset = expert_idx - original_experts
                         for f in range(1, expansion_factor):
                             copy_idx = target_experts + zero_offset + f * zero_expert_num
-                            copy_key = f"model.layers.{layer_idx}.mlp.experts.{copy_idx}.{rest}"
-                            if current_bytes + nbytes > target_shard_size and current_tensors:
-                                flush_shard()
+                            copy_key = make_expert_key(layer_idx, copy_idx, rest)
+                            maybe_flush(nbytes)
                             current_tensors[copy_key] = tensor.clone()
                             current_bytes += nbytes
 
                 else:
-                    if current_bytes + nbytes > target_shard_size and current_tensors:
-                        flush_shard()
+                    maybe_flush(nbytes)
                     current_tensors[key] = tensor
                     current_bytes += nbytes
 

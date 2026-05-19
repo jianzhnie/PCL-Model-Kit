@@ -16,6 +16,7 @@
 #   TARGET_EXPERTS    - target number of routed experts (default: double original)
 #   TARGET_ZERO_EXPERT - target number of zero experts (default: double original)
 #   TARGET_TOPK        - target moe_topk (default: unchanged)
+#   NOISE_SCALE         - Gaussian noise scale for duplicated classifier weights (default: 0.0)
 
 set -euo pipefail
 
@@ -28,6 +29,7 @@ EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_experts.py"
 TARGET_EXPERTS="${1:-${TARGET_EXPERTS:-}}"
 TARGET_TOPK="${2:-${TARGET_TOPK:-}}"
 TARGET_ZERO_EXPERT="${TARGET_ZERO_EXPERT:-}"
+NOISE_SCALE="${NOISE_SCALE:-}"
 
 # Default paths - update these as needed
 MODEL_DIR="${MODEL_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat}"
@@ -56,6 +58,7 @@ echo "Output dir:     ${OUTPUT_DIR}"
 echo "Target Experts: ${TARGET_EXPERTS:-auto}"
 echo "Target Zero Experts: ${TARGET_ZERO_EXPERT:-auto}"
 echo "Target Topk:    ${TARGET_TOPK:-auto (unchanged)}"
+echo "Noise Scale:    ${NOISE_SCALE:-0.0}"
 
 if [ ! -d "$MODEL_DIR" ]; then
     echo "ERROR: Model directory not found: $MODEL_DIR"
@@ -75,6 +78,10 @@ fi
 
 if [ -n "$TARGET_TOPK" ]; then
     CMD+=(--target_topk "$TARGET_TOPK")
+fi
+
+if [ -n "$NOISE_SCALE" ]; then
+    CMD+=(--noise-scale "$NOISE_SCALE")
 fi
 
 "${CMD[@]}"
