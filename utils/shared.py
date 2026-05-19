@@ -84,6 +84,16 @@ def is_router_param(param_name: str) -> bool:
     return param_name.endswith(ALL_ROUTER_SUFFIXES)
 
 
+def is_router_weight(param_name: str) -> bool:
+    """Check if the parameter is a router classifier/gate weight (not bias)."""
+    return param_name.endswith(ROUTER_WEIGHT_SUFFIXES)
+
+
+def is_router_bias(param_name: str) -> bool:
+    """Check if the parameter is a router score correction bias (not weight)."""
+    return param_name.endswith(ROUTER_BIAS_SUFFIXES)
+
+
 def tensor_nbytes(tensor) -> int:
     """Return the size of a tensor in bytes."""
     return tensor.element_size() * tensor.nelement()
