@@ -42,7 +42,6 @@ from utils.shared import (
     get_expert_info,
     get_nbytes_from_meta,
     is_router_bias,
-    is_router_param,
     is_router_weight,
     load_config,
     load_index,
@@ -222,18 +221,53 @@ def expand_router_bias(
     zero_expert_num: int,
     expansion_factor: int,
 ) -> torch.Tensor:
-    """Expand a router score correction bias (exact copies, no noise).
+    """Expand a router score correction bias (exact copies, no noise)."""
+    return expand_router_weight(tensor, original_experts, zero_expert_num, expansion_factor, noise_scale=0.0)
 
-    Layout: [real_experts * expansion_factor, zero_experts * expansion_factor]
-    """
-    if zero_expert_num > 0:
-        real_part = tensor[:original_experts]
-        zero_part = tensor[original_experts:]
-        expanded_real = torch.cat([real_part] * expansion_factor, dim=0)
-        expanded_zero = torch.cat([zero_part] * expansion_factor, dim=0)
-        return torch.cat([expanded_real, expanded_zero], dim=0)
+
+def _expand_tensor(
+    key: str,
+    tensor: torch.Tensor,
+    original_experts: int,
+    zero_expert_num: int,
+    expansion_factor: int,
+    source_to_targets: dict[int, list[int]],
+    target_experts: int,
+    noise_scale: float = 0.0,
+) -> dict[str, torch.Tensor]:
+    """Expand a single tensor, returning {output_key: expanded_tensor}."""
+    total_routed = original_experts + zero_expert_num
+
+    if is_router_weight(key):
+        validate_router_shape(key, list(tensor.shape), total_routed)
+        return {key: expand_router_weight(
+            tensor, original_experts, zero_expert_num, expansion_factor, noise_scale,
+        )}
+    elif is_router_bias(key):
+        validate_router_shape(key, list(tensor.shape), total_routed)
+        return {key: expand_router_bias(
+            tensor, original_experts, zero_expert_num, expansion_factor,
+        )}
+    elif info := get_expert_info(key):
+        layer_idx, expert_idx, rest = info
+        result: dict[str, torch.Tensor] = {}
+        if expert_idx < original_experts:
+            result[key] = tensor
+            for new_expert_idx in source_to_targets.get(expert_idx, []):
+                new_key = make_expert_key(layer_idx, new_expert_idx, rest)
+                result[new_key] = tensor.clone()
+        else:
+            base_new_idx = expert_idx - original_experts + target_experts
+            new_key = make_expert_key(layer_idx, base_new_idx, rest)
+            result[new_key] = tensor
+            zero_offset = expert_idx - original_experts
+            for f in range(1, expansion_factor):
+                copy_idx = target_experts + zero_offset + f * zero_expert_num
+                copy_key = make_expert_key(layer_idx, copy_idx, rest)
+                result[copy_key] = tensor.clone()
+        return result
     else:
-        return torch.cat([tensor] * expansion_factor, dim=0)
+        return {key: tensor}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -260,7 +294,6 @@ def plan_output_layout(
     total_original = 0
     total_duplicated = 0
     total_routed = original_experts + zero_expert_num
-    target_zero_expert_num = zero_expert_num * expansion_factor
 
     for shard_file in tqdm(shard_files, desc="Scanning"):
         shard_path = model_dir / shard_file
@@ -270,50 +303,19 @@ def plan_output_layout(
 
         header = read_safetensors_header(shard_path)
         for key, (dtype, shape) in header.items():
-            nbytes = get_nbytes_from_meta(dtype, shape)
-
-            if is_router_param(key):
-                validate_router_shape(key, shape, total_routed)
-                bytes_per_expert = nbytes // total_routed
-                new_nbytes = bytes_per_expert * (target_experts + target_zero_expert_num)
-                if new_nbytes + current_bytes > target_shard_size and current_bytes > 0:
+            for _, output_nbytes, action in _expand_tensor_meta(
+                key, dtype, shape, original_experts, zero_expert_num,
+                total_routed, expansion_factor, source_to_targets, target_experts,
+            ):
+                if output_nbytes + current_bytes > target_shard_size and current_bytes > 0:
                     num_output_shards += 1
                     current_bytes = 0
-                current_bytes += new_nbytes
-                total_output_bytes += new_nbytes
-                total_original += 1
-            elif info := get_expert_info(key):
-                _, expert_idx, _ = info
-                if nbytes + current_bytes > target_shard_size and current_bytes > 0:
-                    num_output_shards += 1
-                    current_bytes = 0
-                current_bytes += nbytes
-                total_output_bytes += nbytes
-                total_original += 1
-
-                if expert_idx < original_experts:
-                    for _ in source_to_targets.get(expert_idx, []):
-                        if nbytes + current_bytes > target_shard_size and current_bytes > 0:
-                            num_output_shards += 1
-                            current_bytes = 0
-                        current_bytes += nbytes
-                        total_output_bytes += nbytes
-                        total_duplicated += 1
-                elif zero_expert_num > 0:
-                    for _ in range(expansion_factor - 1):
-                        if nbytes + current_bytes > target_shard_size and current_bytes > 0:
-                            num_output_shards += 1
-                            current_bytes = 0
-                        current_bytes += nbytes
-                        total_output_bytes += nbytes
-                        total_duplicated += 1
-            else:
-                if nbytes + current_bytes > target_shard_size and current_bytes > 0:
-                    num_output_shards += 1
-                    current_bytes = 0
-                current_bytes += nbytes
-                total_output_bytes += nbytes
-                total_original += 1
+                current_bytes += output_nbytes
+                total_output_bytes += output_nbytes
+                if action == "clone":
+                    total_duplicated += 1
+                else:
+                    total_original += 1
 
     return num_output_shards, total_output_bytes, total_original, total_duplicated
 
@@ -656,61 +658,14 @@ def main():
             with safe_open(str(model_dir / shard_file), framework="pt", device="cpu") as sf:
                 for key in sf.keys():
                     tensor = sf.get_tensor(key)
-                    nbytes = tensor_nbytes(tensor)
-
-                    if is_router_weight(key):
-                        validate_router_shape(key, list(tensor.shape), total_routed)
-                        new_tensor = expand_router_weight(
-                            tensor, original_experts, zero_expert_num,
-                            expansion_factor, args.noise_scale,
-                        )
-                        new_nbytes = tensor_nbytes(new_tensor)
-                        maybe_flush(new_nbytes)
-                        current_tensors[key] = new_tensor
-                        current_bytes += new_nbytes
-
-                    elif is_router_bias(key):
-                        validate_router_shape(key, list(tensor.shape), total_routed)
-                        new_tensor = expand_router_bias(
-                            tensor, original_experts, zero_expert_num, expansion_factor,
-                        )
-                        new_nbytes = tensor_nbytes(new_tensor)
-                        maybe_flush(new_nbytes)
-                        current_tensors[key] = new_tensor
-                        current_bytes += new_nbytes
-
-                    elif info := get_expert_info(key):
-                        layer_idx, expert_idx, rest = info
-                        if expert_idx < original_experts:
-                            maybe_flush(nbytes)
-                            current_tensors[key] = tensor
-                            current_bytes += nbytes
-
-                            for new_expert_idx in source_to_targets.get(expert_idx, []):
-                                new_key = make_expert_key(layer_idx, new_expert_idx, rest)
-                                maybe_flush(nbytes)
-                                current_tensors[new_key] = tensor.clone()
-                                current_bytes += nbytes
-                        else:
-                            # Zero-expert: shift to new indices after expanded routed experts
-                            base_new_idx = expert_idx - original_experts + target_experts
-                            new_key = make_expert_key(layer_idx, base_new_idx, rest)
-                            maybe_flush(nbytes)
-                            current_tensors[new_key] = tensor
-                            current_bytes += nbytes
-
-                            # Additional copies for expanded zero-expert slots
-                            zero_offset = expert_idx - original_experts
-                            for f in range(1, expansion_factor):
-                                copy_idx = target_experts + zero_offset + f * zero_expert_num
-                                copy_key = make_expert_key(layer_idx, copy_idx, rest)
-                                maybe_flush(nbytes)
-                                current_tensors[copy_key] = tensor.clone()
-                                current_bytes += nbytes
-
-                    else:
+                    for out_key, expanded in _expand_tensor(
+                        key, tensor, original_experts, zero_expert_num,
+                        expansion_factor, source_to_targets, target_experts,
+                        args.noise_scale,
+                    ).items():
+                        nbytes = tensor_nbytes(expanded)
                         maybe_flush(nbytes)
-                        current_tensors[key] = tensor
+                        current_tensors[out_key] = expanded
                         current_bytes += nbytes
 
         flush_shard()
