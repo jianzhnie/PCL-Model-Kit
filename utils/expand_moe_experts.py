@@ -484,6 +484,11 @@ def main():
                         help="Target number of experts. Defaults to double the original.")
     parser.add_argument("--target_topk", type=int, default=None,
                         help="Target moe_topk. Defaults to unchanged.")
+    parser.add_argument("--use_group_routing", action="store_true", default=False,
+                        help="Enable grouped expert routing (方案一). "
+                             "Keeps moe_topk unchanged and adds use_group_routing + "
+                             "expert_expansion_factor to config. "
+                             "Mutually exclusive with --target_topk.")
     parser.add_argument("--noise-scale", type=float, default=0.0,
                         help="Gaussian noise scale for duplicated classifier weights "
                              "(default 0.0 = exact copies; recommend 1e-6 to break symmetry)")
@@ -491,6 +496,14 @@ def main():
                         help="Number of worker processes for parallel output shard "
                              "writing (default 1 = serial; use 0 for CPU count)")
     args = parser.parse_args()
+
+    if args.use_group_routing and args.target_topk is not None:
+        print(
+            "ERROR: --use_group_routing and --target_topk are mutually exclusive. "
+            "Grouped routing keeps moe_topk unchanged by design.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     model_dir = Path(args.model_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
@@ -547,7 +560,11 @@ def main():
     print(f"Detected {len(experts_by_layer)} MoE layer(s) with {original_experts} experts each")
 
     # ── Update & write config ───────────────────────────────────────────
-    new_config = expand_config(config, target_experts, target_zero_expert_num, args.target_topk)
+    target_topk = None if args.use_group_routing else args.target_topk
+    new_config = expand_config(config, target_experts, target_zero_expert_num, target_topk)
+    if args.use_group_routing:
+        new_config["use_group_routing"] = True
+        new_config["expert_expansion_factor"] = expansion_factor
     describe_config_diff(config, new_config)
 
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -714,7 +731,9 @@ def main():
     print(f"  Expert count key used: {expert_count_key or 'n_routed_experts'}")
     print(f"  Config experts: {target_experts} (real) + {target_zero_expert_num} (zero) "
           f"= {target_experts + target_zero_expert_num} total routed")
-    if args.target_topk is not None:
+    if args.use_group_routing:
+        print(f"  Routing: grouped (方案一), topk unchanged")
+    elif args.target_topk is not None:
         print(f"  Topk: {args.target_topk}")
     print(f"  Output shards: {num_output_shards}")
     print(f"\nDone! Output saved to: {output_dir}")
