@@ -27,16 +27,17 @@
 
 ```mermaid
 graph TD
-    A[LLM 参数扩增] --> B["🔵 路线一: 架构不变"]
-    A --> C["🔴 路线二: 改变架构"]
-    B --> B1["深度: +层数"]
-    B --> B2["宽度: +hidden_size"]
-    B --> B3["混合: 深度+宽度"]
+    A["LLM 参数扩增"] --> B["🔵 架构不变"]
+    A --> C["🔴 改变架构"]
+    B --> B1["+深度"]
+    B --> B2["+宽度"]
+    B --> B3["深度+宽度混合"]
     C --> C1["Dense → MoE"]
-    C --> C2["GQA → MLA"]
-    C --> C3["新增模块"]
-    style B fill:#4A90D9,color:#fff
-    style C fill:#E8734A,color:#fff
+    C --> C2["注意力升级"]
+    C --> C3["扩展+蒸馏"]
+    style A fill:#2C3E50,color:#fff
+    style B fill:#3498DB,color:#fff
+    style C fill:#E74C3C,color:#fff
 ```
 
 **关键评估维度**：
@@ -56,19 +57,26 @@ graph TD
 
 ### 方法 1：SOLAR DUS（Depth Up-Scaling）— 层重叠复制
 
-**来源**：Upstage, arXiv:2312.15166 (2023)
-**代表成果**：Llama2-7B → SOLAR-10.7B (48层)，Phi-3-14B → Solar Pro-22B
+**来源**：[Upstage](https://www.upstage.ai), [arXiv:2312.15166](https://arxiv.org/abs/2312.15166) (2023)
+**代表成果**：Llama2-7B → SOLAR-10.7B (48层)，Phi-3-medium → Solar Pro-22B
 
 ```mermaid
 graph LR
-    E[Embedding] --> L0["L0~L7"] --> L1["L8~L23 🔵原始"]
-    L1 --> L1c["L8'~L23' 🔴复制"] --> L2["L24~L31"] --> H[LM Head]
-    L1 -.->|重叠区复制| L1c
-    style L1 fill:#4A90D9,color:#fff
-    style L1c fill:#E8734A,color:#fff
+    E[Embedding] --> L0["L0~L7"]
+    L0 --> L1["L8~L23\n🔵 原始"]
+    L1 -.->|复制重叠区| L1c["L8'~L23'\n🔴 复制"]
+    L1 --> L2["L24~L31"]
+    L1c --> L2
+    L2 --> H[LM Head]
+    style L1 fill:#3498DB,color:#fff
+    style L1c fill:#E74C3C,color:#fff
 ```
 
-**原理**：将原模型上下拆分取出，中间重叠区域被复制一次。上半部保持与 embedding 的连接，下半部保持与 LM head 的连接。重叠使拼接点处的表示分布尽可能一致。
+**原理**：SOLAR DUS 将原模型沿深度方向切成上下两段，取出中间重叠区域并复制一次，再把“上段 + 重叠副本 + 下段”拼接成更深的网络。重叠区复制使拼接点处的隐藏状态分布尽可能一致，从而减少层数骤增带来的表示断裂。该方法实现简单，但并非 function-preserving，因此需要大量 continued pretraining 来恢复精度。
+
+- **重叠策略**：通常选择模型中间若干层作为重叠区，既保证与 embedding 端的连续性，也保证与 LM head 端的连续性。
+- **拼接点**：重叠区的输出同时作为上段终点和下一段起点，避免直接拼接导致的分布跳变。
+- **训练需求**：由于新层直接复制原层且未做恒等初始化，初始精度下降明显，需要 100B+ tokens 重新训练。
 
 **量化评估**：
 - 即时精度：显著下降（非 function-preserving），约保持 50-80%
@@ -80,19 +88,23 @@ graph LR
 
 ### 方法 2：LLaMA-Pro 恒等块插入（Block Expansion）
 
-**来源**：Tencent ARC & HKU, arXiv:2401.02415 (2024)
+**来源**：Tencent ARC & HKU, [arXiv:2401.02415](https://arxiv.org/abs/2401.02415) (2024)
 **代表成果**：LLaMA2-7B → LLaMA-Pro-8.3B (40层)，Mistral-7B → Mistral-Pro
 
 ```mermaid
-graph LR
-    X[x] -->|主路| N1[RMSNorm] --> ATT[Self-Attn] --> OP["o_proj=0 🟡"]
+graph TD
+    X[x] --> N1[RMSNorm]
+    N1 --> ATT[Self-Attn]
+    ATT --> OP["o_proj = 0 🟡"]
     OP --> ADD1["x + 0 = x"]
     X -.->|残差| ADD1
-    ADD1 --> N2[RMSNorm] --> FFN[SwiGLU] --> DP["down_proj=0 🟡"]
+    ADD1 --> N2[RMSNorm]
+    N2 --> FFN[SwiGLU]
+    FFN --> DP["down_proj = 0 🟡"]
     DP --> ADD2["x + 0 = x ✅"]
     ADD1 -.->|残差| ADD2
-    style OP fill:#F5A623,color:#333
-    style DP fill:#F5A623,color:#333
+    style OP fill:#F1C40F,color:#333
+    style DP fill:#F1C40F,color:#333
     style ADD2 fill:#27AE60,color:#fff
 ```
 
@@ -103,7 +115,7 @@ new_block.self_attn.o_proj.weight.data.zero_()   # Attention 输出 → 零
 new_block.mlp.down_proj.weight.data.zero_()       # MLP 输出 → 零
 ```
 
-由于残差连接 `output = input + Block(input)`，当 `Block(input) = 0` 时 `output = input`，实现严格恒等映射。
+**原理**：Transformer block 的输出通过残差连接计算 `output = input + Block(input)`。LLaMA-Pro 复制一个原始 block，然后将其 Attention 输出投影 `o_proj` 和 MLP 输出投影 `down_proj` 的权重全部置零。这样新 block 对任意输入都输出零向量，从而 `output = input`，实现严格的恒等映射。扩展后模型在初始时刻与原始模型函数完全一致，因此 zero-shot 精度**零损失**。
 
 **训练策略（两阶段）**：
 
@@ -126,17 +138,24 @@ new_block.mlp.down_proj.weight.data.zero_()       # MLP 输出 → 零
 
 ### 方法 3：LESA（Learnable Layer Scaling-Up）— SVD 插值预测
 
-**来源**：上海交通大学, arXiv:2502.13794 (2025)
+**来源**：上海交通大学, [arXiv:2502.13794](https://arxiv.org/abs/2502.13794) (2025)
 
 ```mermaid
 graph LR
-    L1["Layer_i"] -->|SVD| F1["特征向量"]
-    L2["Layer_i+1"] -->|SVD| F2["特征向量"]
-    F1 & F2 --> NET["🧠 轻量预测网络"] --> PRED["🟢 新层参数"]
-    PRED --> INSERT["Layer_i → New Layer → Layer_i+1"]
-    style NET fill:#4A90D9,color:#fff
+    L1["Layer_i"] -->|SVD| F1["U_i"]
+    L2["Layer i+1"] -->|SVD| F2["U_{i+1}"]
+    F1 & F2 --> NET["🧠 预测网络"]
+    NET --> PRED["🟢 W_new"]
+    PRED --> INSERT["Layer_i → New → Layer_{i+1}"]
+    style NET fill:#3498DB,color:#fff
     style PRED fill:#27AE60,color:#fff
 ```
+
+**原理**：LESA 假设相邻两层之间的参数存在可学习的低秩过渡关系。具体做法是对原模型相邻层的权重矩阵进行 SVD 分解，提取主要特征向量；然后训练一个轻量预测网络，根据相邻层的特征表示插值生成新层的参数。这样插入的新层不是简单复制，而是“预测”出来的，具有更接近真实中间层的表达能力，因此初始精度高于 DUS，收敛速度也更快。
+
+- **SVD 分解**：揭示层间权重的低秩结构，识别哪些方向上的变化是主要信息变换。
+- **预测网络**：输入相邻层的特征，输出新层权重；网络参数量远小于原模型，训练成本低。
+- **插值位置**：可在任意两层之间插入多个新层，实现连续深度扩展。
 
 **核心创新**：通过 SVD 发现层间参数的低秩模式，用小型网络预测新层参数。新层从初始化开始就具有"有意义"的参数，不需要从零学起。
 
@@ -157,20 +176,27 @@ graph LR
 
 ### 方法 4：MSG（Masked Structural Growth）— 多维度生长
 
-**来源**：智源研究院 BAAI, arXiv:2305.02869 (2023)
+**来源**：智源研究院 BAAI, [arXiv:2305.02869](https://arxiv.org/abs/2305.02869) (2023)
 **代表成果**：FLM-101B, Tele-FLM-1T
 
 ```mermaid
-graph LR
-    ORIG["原始 Block"] -->|"🔵 深度"| DEPTH["+层数 恒等映射"]
-    ORIG -->|"🔴 宽度"| WIDTH["+hidden_size 零填充"]
-    ORIG -->|"🟢 头数"| HEADS["+attn heads o_proj=0"]
-    ORIG -->|"🟣 FFN"| FFN_G["+intermediate 零填充"]
-    style DEPTH fill:#4A90D9,color:#fff
-    style WIDTH fill:#E8734A,color:#fff
+graph TD
+    ORIG["原始 Block"] --> DEPTH["🔵 +深度\n恒等块"]
+    ORIG --> WIDTH["🔴 +宽度\n零填充"]
+    ORIG --> HEADS["🟢 +头数\no_proj=0"]
+    ORIG --> FFN["🟣 +FFN\n零填充"]
+    style ORIG fill:#2C3E50,color:#fff
+    style DEPTH fill:#3498DB,color:#fff
+    style WIDTH fill:#E74C3C,color:#fff
     style HEADS fill:#27AE60,color:#fff
-    style FFN_G fill:#9B59B6,color:#fff
+    style FFN fill:#9B59B6,color:#fff
 ```
+
+**原理**：MSG 将“扩增”视为一个渐进的掩码学习过程。对每一个待扩展维度（深度、宽度、头数、FFN），新增参数初始时被一个二进制掩码屏蔽，仅保留与原模型完全等价的功能子网络；训练过程中按预定 schedule 逐步解锁新参数，使模型先在原始能力空间内稳定，再迁移到更大的参数空间。
+
+- **宽度生长**：对 `hidden_size`、`intermediate_size` 等维度进行零填充扩展，并用掩码控制哪些新神经元参与前向传播；初始掩码只激活原维度，function-preserving 成立。
+- **深度生长**：与 LLaMA-Pro 类似，新层通过 `o_proj=0`、`down_proj=0` 初始化为恒等块。
+- **生长调度**：论文提出 growth scheduler，按 token 数或 loss plateau 逐步扩大掩码比例，避免一次性解锁大量随机参数导致的训练震荡。
 
 **量化评估**：
 - 即时精度：**100%保持**（function-preserving）
@@ -182,21 +208,28 @@ graph LR
 
 ### 方法 5：Net2Net（经典理论基础）
 
-**来源**：Google Brain, ICLR 2016
+**来源**：Google Brain, [Net2Net: Accelerating Learning via Knowledge Transfer](https://arxiv.org/abs/1511.05641), ICLR 2016
 
 ```mermaid
-graph LR
-    subgraph Net2WiderNet 宽度扩展
-        W1["W_in(m×n)"] -->|"复制 k 列"| W2["W_in'(m×n+k)"]
-        W3["W_out(n×p)"] -->|"复制行 ÷ k"| W4["W_out'(n+k×p)"]
+graph TD
+    subgraph Net2WiderNet["🔴 宽度扩展"]
+        W1["W_in (m×n)"] -->|"复制 k 列"| W2["W_in' (m×(n+k))"]
+        W3["W_out (n×p)"] -->|"复制 k 行 ÷ k"| W4["W_out' ((n+k)×p)"]
     end
-    subgraph Net2DeeperNet 深度扩展
-        L1[Layer_i] --> NEW["新层 = 恒等"] --> L2[Layer_i+1]
+    subgraph Net2DeeperNet["🔵 深度扩展"]
+        L1[Layer_i] --> NEW["新层 = 恒等"] --> L2[Layer i+1]
     end
     W4 --> EQ["✅ 输出不变"]
     L2 --> EQ
     style EQ fill:#27AE60,color:#fff
 ```
+
+**原理**：Net2Net 提出两种函数保持（function-preserving）的模型变换：
+
+- **Net2WiderNet**：将某层神经元复制 k 份，输入权重 `W_in` 复制 k 列，输出权重 `W_out` 复制 k 行并除以 k，保证 `W_out' · W_in' = W_out · W_in`，从而前向输出不变。
+- **Net2DeeperNet**：在相邻层之间插入一个初始化为恒等变换的新层，即 `f(x) = x`，因此整体函数不变。
+
+这两种变换是后续 LLaMA-Pro、MSG 等工作的理论基础，但原论文主要针对 CNN+ReLU，直接迁移到 Transformer 的 SwiGLU/GQA/归一化结构需要额外适配。
 
 **在 LLM 时代的局限**：
 - 原论文针对 CNN + ReLU，直接套用到 SwiGLU/GQA 需适配
@@ -213,26 +246,33 @@ graph LR
 
 ### 方法 6：MoE Upcycling（Dense → 稀疏混合专家）
 
-**来源**：Google, Skywork, Amazon 等
-**代表成果**：Skywork-MoE (13B→146B)
+**来源**：[Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints](https://arxiv.org/abs/2212.05055) (Komatsuzaki et al., ICLR 2023); 工业实践包括 [Skywork-MoE](https://huggingface.co/Skywork/Skywork-MoE)、Amazon 2025 专家复用报告等
+**代表成果**：Skywork-MoE (13B→146B 总参数)
 
 ```mermaid
 graph LR
-    subgraph MoE 转换后
-        IN2[x] --> A2[Attention] --> R["🔴 Router<br/>top-K"]
-        R -->|选中| E1["Expert1 🟢"]
-        R -->|选中| E2["Expert2 🟢"]
-        R -.->|未选| E3["Expert3 ⚪"]
-        R -.->|未选| EN["ExpertN ⚪"]
-        E1 --> SUM["Σ 加权"] --> OUT2[out]
-        E2 --> SUM
-    end
+    IN[x] --> A[Attention]
+    A --> R["🔴 Router\ntop-K"]
+    R -->|top-K| E1["Expert 1 🟢"]
+    R -->|top-K| E2["Expert 2 🟢"]
+    R -.->|未激活| E3["Expert 3 ⚪"]
+    R -.->|未激活| EN["Expert N ⚪"]
+    E1 --> SUM["Σ 加权求和"]
+    E2 --> SUM
+    SUM --> OUT[out]
     style R fill:#E74C3C,color:#fff
-    style E1 fill:#2ECC71,color:#fff
-    style E2 fill:#2ECC71,color:#fff
-    style E3 fill:#95A5A6,color:#fff
-    style EN fill:#95A5A6,color:#fff
+    style E1 fill:#27AE60,color:#fff
+    style E2 fill:#27AE60,color:#fff
+    style E3 fill:#BDC3C7,color:#333
+    style EN fill:#BDC3C7,color:#333
+    style SUM fill:#3498DB,color:#fff
 ```
+
+**原理**：MoE Upcycling（又称 Sparse Upcycling）的核心思想是：把 Dense 模型中已经训练好的 FFN 权重复制多份，作为多个“专家”的初始参数；同时为每层新增一个可学习的 Router，根据输入 token 的 hidden state 选择 Top-K 个专家参与计算。由于每个专家本质上仍是原 FFN 的副本，模型在扩展瞬间已经具备较强的基础能力；Router 虽然随机初始化，但专家权重提供了良好的优化起点，因此只需相对少量的 continued pretraining 即可恢复甚至超越原模型精度。
+
+- **参数效率**：总参数量随专家数线性增长，但每个 token 只激活 K 个专家，因此推理激活参数量可保持与 Dense 模型相近（top-1 时几乎不变）。
+- **负载均衡**：训练时需要加入 load balancing loss（如 switch loss / z-loss），防止 Router 把所有 token 都路由到少数“受欢迎”的专家，导致专家利用率低下和并行效率下降。
+- **初始化细节**：原 FFN 的 `gate_proj`、`up_proj`、`down_proj` 被复制为每个专家的初始权重；Router 的权重通常随机初始化，或在复制后对所有专家对应的 logits 做轻微扰动以打破对称性。
 
 **架构变化**：
 - ✅ 新增 Router 网络（随机初始化）
@@ -250,28 +290,36 @@ graph LR
 
 ### 方法 7：注意力机制升级（GQA → MLA / MHA → GQA）
 
-**来源**：DeepSeek-V2 (MLA), Llama 2/3 (GQA)
+**来源**：[DeepSeek-V2 MLA](https://arxiv.org/abs/2405.04434) (DeepSeek-AI, 2024); Llama 2/3 GQA (Touvron et al., 2023; [Dubey et al., 2024](https://arxiv.org/abs/2407.21783))
 
 ```mermaid
-graph LR
-    subgraph MHA 多头独立KV
-        Q1[Q1]---KV1[K1,V1]
-        Q2[Q2]---KV2[K2,V2]
-        Q3[Q3]---KV3[K3,V3]
-        Q4[Q4]---KV4[K4,V4]
+graph TD
+    subgraph MHA["🔵 MHA: 独立 KV"]
+        Q1[Q1] --- KV1["K1,V1"]
+        Q2[Q2] --- KV2["K2,V2"]
+        Q3[Q3] --- KV3["K3,V3"]
+        Q4[Q4] --- KV4["K4,V4"]
     end
-    subgraph GQA 分组共享KV
-        GQ1[Q1] & GQ2[Q2]---GKV1["KV 🟡共享"]
-        GQ3[Q3] & GQ4[Q4]---GKV2["KV 🟡共享"]
+    subgraph GQA["🟢 GQA: 分组共享 KV"]
+        GQ1[Q1] & GQ2[Q2] --- GKV1["KV 共享 🟡"]
+        GQ3[Q3] & GQ4[Q4] --- GKV2["KV 共享 🟡"]
     end
-    subgraph MLA 压缩KV
-        MQ["Q1..Qn"] --> COMP["🔴 压缩投影"] --> CACHE["Cache 📉 极小"] --> DEC["解压恢复"] --> OUT[输出]
+    subgraph MLA["🔴 MLA: 压缩 KV"]
+        MQ["Q1..Qn"] --> COMP["压缩投影"] --> CACHE["Cache 极小 📉"] --> DEC["解压缩"] --> OUT[输出]
     end
-    style GKV1 fill:#F39C12,color:#fff
-    style GKV2 fill:#F39C12,color:#fff
+    style GKV1 fill:#F1C40F,color:#333
+    style GKV2 fill:#F1C40F,color:#333
     style COMP fill:#E74C3C,color:#fff
     style CACHE fill:#27AE60,color:#fff
 ```
+
+**原理**：注意力机制的升级并不直接以“翻倍参数”为目标，而是通过改变 Key/Value 的表示与缓存方式来优化推理效率或调整模型容量。
+
+- **MHA → GQA**：将多个 query head 共享同一组 K/V 投影，减少 KV Cache 大小和内存带宽压力，但保持 attention 计算逻辑不变；参数量略有减少。
+- **GQA → MLA**：进一步将 K/V 压缩到一个低维潜在向量（latent vector），解码时只缓存压缩向量，显著降低长序列下的显存占用；需要新增压缩/解压缩矩阵。
+- **GQA → MHA**：反向操作，将共享的 K/V 头重新独立化，会增加参数量与 KV Cache，但可能提升表达能力；通常不推荐用于效率优先的场景。
+
+这些转换一般作为扩参方案（如 MSG 宽度扩展）的配套调整，而非独立的翻倍参数方案。
 
 **架构变化方式**：
 
@@ -287,19 +335,34 @@ graph LR
 
 ### 方法 8：扩展 + 知识蒸馏 流水线
 
-**来源**：社区实践 (Qwen3-72B-Embiggened, 2025)
+**来源**：社区实践 [Qwen3-72B-Embiggened](https://huggingface.co/cognitivecomputations/Qwen3-72B-Embiggened) (cognitivecomputations, 2025)
 
 ```mermaid
 graph LR
     SMALL["Qwen3-32B"] ==>|"LLaMA-Pro / MSG"| EXPANDED["扩展骨架 ~72B 🔴"]
-    TEACHER["Teacher 235B 🧠"] -.->|soft labels| DISTILL["蒸馏训练<br/>L = CE + KL"]
-    EXPANDED ==> DISTILL ==> SFT["SFT 对齐"] ==> FINAL["最终模型 🎯"]
+    TEACHER["Teacher 235B 🧠"] -.->|soft labels| DISTILL["蒸馏训练\nL = CE + KL"]
+    EXPANDED ==> DISTILL
+    DISTILL ==> SFT["SFT 对齐"]
+    SFT ==> FINAL["最终模型 🎯"]
     style TEACHER fill:#9B59B6,color:#fff
+    style EXPANDED fill:#E74C3C,color:#fff
+    style DISTILL fill:#3498DB,color:#fff
     style FINAL fill:#27AE60,color:#fff
-    style EXPANDED fill:#E8734A,color:#fff
 ```
 
-**核心思路**：先用架构不变的方法（LLaMA-Pro/MSG）扩展参数骨架，再用大模型的 soft labels 作为监督信号进行蒸馏训练。
+**原理**：该流水线将“参数扩增”与“知识迁移”解耦。第一步用 function-preserving 的方法（LLaMA-Pro 或 MSG）把小模型扩展为更大的骨架，保证初始精度不崩盘；第二步让一个大 Teacher 模型对相同输入生成 soft labels（logits 分布），用蒸馏损失
+
+```
+L = λ * CE(y_true, y_student) + (1-λ) * T² * KL(softmax(z_teacher/T), softmax(z_student/T))
+```
+
+指导学生模型的输出分布。由于 Teacher 已经掌握了更丰富的模式，蒸馏信号比纯自监督预训练更稠密，因此可以用更少的数据和计算达到相近的精度。
+
+- **T（温度）**：通常取 1.5–2.5，温度越高越关注概率分布的整体形状，越低越关注硬标签。
+- **λ**：CE 与 KL 的权重，常见设置为 0.5 或根据任务调整。
+- **数据效率**：社区实践表明，蒸馏可把 continued pretraining 所需数据量减少 30-50%，但代价是需要大量 Teacher 推理。
+
+**核心思路**：先用 LLaMA-Pro/MSG 扩展参数骨架，再用 Teacher 的 soft labels 蒸馏，最后用少量 SFT 对齐。
 
 **优势**：
 - Teacher 信号比自监督更高效，数据需求更少
@@ -320,16 +383,19 @@ graph LR
 
 ```mermaid
 graph TD
-    M["MoE 基座扩展"] --> E["🔵 专家数扩展 E→mE"]
-    M --> D["🔴 深度扩展 +MoE层"]
-    M --> W["🟢 专家内部扩展 +expert_size"]
-    M --> A["🟣 Attention扩展 +heads/d_model"]
-    E --> E1["推理激活参数不变"]
-    D --> D1["推理延迟线性增"]
-    W --> W1["推理激活参数增"]
+    M["MoE 基座扩展"] --> E["🔵 专家数扩展"]
+    M --> D["🔴 深度扩展"]
+    M --> W["🟢 专家宽度扩展"]
+    M --> A["🟣 Attention扩展"]
+    E --> E1["E → mE"]
+    E --> E2["激活参数不变"]
+    D --> D1["延迟线性增"]
+    W --> W1["激活参数增"]
+    A --> A1["激活参数增"]
+    style M fill:#2C3E50,color:#fff
     style E fill:#27AE60,color:#fff
-    style D fill:#4A90D9,color:#fff
-    style W fill:#E8734A,color:#fff
+    style D fill:#3498DB,color:#fff
+    style W fill:#E74C3C,color:#fff
     style A fill:#9B59B6,color:#fff
 ```
 
@@ -337,22 +403,34 @@ graph TD
 
 ### 方案 M1：Expert Upcycling — 专家数量扩展（首选）
 
-**来源**：Amazon, arXiv:2604.19835 (2026)
+**来源**：[Expert Upcycling: Shifting the Compute-Efficient Frontier of Mixture-of-Experts](https://arxiv.org/abs/2604.19835), arXiv:2604.19835 (Amazon, 2026)
+
+> ⚠️ 该引用为 2026 年预印本，非常新，正式使用前请核对原文中的具体数字与实验设置。
+
+**原理**：Expert Upcycling 把 MoE 基座模型中已有的 E 个专家各自复制一份（或按效用选择部分专家复制），得到 mE 个专家。由于每个 token 仍只激活原来的 Top-K 个专家，推理时的计算量几乎不变；但总参数量随专家数线性增长。复制后必须破坏对称性，否则 Router 会给副本分配相同分数，副本无法分化出不同专长。
+
+- **效用导向选择**：不盲目复制所有专家，而是根据专家在训练数据上的梯度重要性或激活频率，优先复制“高价值”专家，实验表明这比均匀复制的 **gap 闭合速度提升 3 倍以上**。
+- **Router 扩展**：原 Router 输出维度为 E，扩展后输出维度为 mE。新增列从被复制专家的对应列初始化，并加入小噪声，既保留原路由偏好，又允许新专家获得独立分数。
+- **对称性破坏**：见下方三种策略；这是决定扩展效果的关键步骤。
 
 **核心思路**：将已有 E 个专家的 MoE 扩展为 mE 个专家，保持 Top-K 路由不变，推理激活参数不变。
 
 ```mermaid
 graph LR
-    subgraph 原始 E 个专家
-        R1["Router top-2"] --> Ex1["E1 🔵"] & Ex2["E2 🔵"]
+    subgraph ORIG["原始 E 专家"]
+        R1["Router top-2"] --> Ex1["E1 🔵"]
+        R1 --> Ex2["E2 🔵"]
     end
-    subgraph 扩展后 2E 个专家
-        R2["Router top-2"] --> F1["E1 🔵"] & F2["E1' 🔴"] & F3["E2 🔵"] & F4["E2' 🔴"]
+    subgraph EXP["扩展后 2E 专家"]
+        R2["Router top-2"] --> F1["E1 🔵"]
+        R2 --> F2["E1' 🔴"]
+        R2 --> F3["E2 🔵"]
+        R2 --> F4["E2' 🔴"]
     end
     Ex1 -.->|复制| F2
     Ex2 -.->|复制| F4
-    style F2 fill:#E8734A,color:#fff
-    style F4 fill:#E8734A,color:#fff
+    style F2 fill:#E74C3C,color:#fff
+    style F4 fill:#E74C3C,color:#fff
 ```
 
 **三种专家选择策略**：
@@ -380,7 +458,8 @@ for param in new_expert.parameters():
     param *= mask
 
 # 方法3: Cluster-Aware Upcycling（2026最新，效果最好）
-# 先按训练数据对 token 做聚类，再让不同副本专家在不同 cluster 上微调
+# 论文: arXiv:2604.13508 — 先按训练数据对 token 做聚类，再让不同副本专家在不同 cluster 上微调
+# ⚠️ 该引用为 2026 年预印本，使用前请核对原文。
 ```
 
 **Router 扩展**：
@@ -404,14 +483,16 @@ W_router_new[:, new_idx] = W_router[:, src_idx] + noise
 
 **思路**：与 Dense 模型的深度扩展完全类似——在已有 MoE 层之间插入新的 MoE 层（含 Attention + MoE-FFN），使用恒等块初始化。
 
+**原理**：在相邻 MoE 层之间插入新层，新层中 Attention 的 `o_proj` 和每个专家的 `down_proj` 初始化为零，因此新层整体满足 `Layer(x) ≈ x`，模型函数保持不变。由于新层包含完整 Router + 专家组结构，插入后总专家数随层数增加，但每层仍只激活 K 个专家，因此推理延迟与 Dense 深度扩展一样线性增加，而总参数增长更快。
+
 ```mermaid
 graph LR
-    subgraph 扩展后 2L层
+    subgraph EXP["扩展后 2L 层"]
         B0["Layer0 🔵"] --> I0["ID 🔴"] --> B1["Layer1 🔵"] --> I1["ID 🔴"] --> Bx2["···"] --> BN["LayerL 🔵"] --> IN["ID 🔴"]
     end
-    style I0 fill:#E8734A,color:#fff
-    style I1 fill:#E8734A,color:#fff
-    style IN fill:#E8734A,color:#fff
+    style I0 fill:#E74C3C,color:#fff
+    style I1 fill:#E74C3C,color:#fff
+    style IN fill:#E74C3C,color:#fff
 ```
 
 **关键要点**：
@@ -426,17 +507,19 @@ graph LR
 
 **思路**：扩展每个专家的 `intermediate_size`（FFN 隐藏维度），或扩展共享的 `d_model`。
 
+**原理**：对每个专家内部的 FFN 做宽度扩展，等价于对 Dense FFN 做 MSG 风格的零填充生长。新增的中间维度初始为零，`down_proj` 对新增维度对应的行也初始化为零，因此专家函数保持不变；扩展后每个被激活专家承担的计算量增加，整体表达能力增强。若扩展共享的 `d_model`，则需同步调整所有投影矩阵（Attention、FFN、Embedding、LM Head）的输入/输出维度，并在新增维度上做零填充，保证 function-preserving。
+
 ```mermaid
 graph LR
-    subgraph 原始专家
-        I1["input d"] --> G1["gate(d→h)"] --> S1["SwiGLU"] --> D1["down(h→d)"]
+    subgraph ORIG["原始专家"]
+        I1["input d"] --> G1["gate_proj\nd→h"] --> S1["SwiGLU"] --> D1["down_proj\nh→d"]
     end
-    subgraph 扩展后专家
-        I2["input d"] --> G2["gate(d→h')"] --> S2["SwiGLU"] --> D2["down(h'→d)"]
+    subgraph EXP["扩展后专家"]
+        I2["input d"] --> G2["gate_proj\nd→h'"] --> S2["SwiGLU"] --> D2["down_proj\nh'→d"]
     end
-    G1 -.->|"h→h' 零填充"| G2
-    style G2 fill:#E8734A,color:#fff
-    style D2 fill:#E8734A,color:#fff
+    G1 -.->|h→h' 零填充| G2
+    style G2 fill:#E74C3C,color:#fff
+    style D2 fill:#E74C3C,color:#fff
 ```
 
 **注意**：
@@ -448,7 +531,9 @@ graph LR
 
 ### 方案 M4：Attention 层扩展（d_model / num_heads）
 
-MoE 架构中 Attention 层通常是 Dense 的（所有 token 共享），扩展方式与 Dense 模型完全一致：
+**原理**：MoE 架构中 Attention 层通常是 Dense 的（所有 token 共享），扩展方式与 Dense 模型一致。增加 `num_attention_heads` 时，对新增 head 的 `o_proj` 输出权重初始化为零，保证新增 head 不影响残差输出；增加 `d_model` 时，对所有线性层的输入/输出维度同步零填充，使新增维度在前向传播中贡献为零。这样可在保持 function-preserving 的前提下扩大注意力容量。
+
+**实现要点**：
 - 增加 `num_attention_heads` / `num_kv_heads`：新增头的 o_proj 初始化为零
 - 增加 `d_model`：所有层的投影矩阵同步零填充扩展
 
@@ -469,12 +554,16 @@ MoE 架构中 Attention 层通常是 Dense 的（所有 token 共享），扩展
 ```mermaid
 graph TD
     START["MoE 基座扩参"] --> Q1{"推理成本能否增加?"}
-    Q1 -->|不能| M1["✅ M1: 专家数扩展<br/>推理不变，总参翻倍"]
+    Q1 -->|不能| M1["✅ M1 专家数扩展\n推理不变，总参翻倍"]
     Q1 -->|可以| Q2{"扩展目标?"}
-    Q2 -->|"精确 2x"| COMBO["M1+M2 组合<br/>专家数+深度"]
-    Q2 -->|"表达力优先"| M3["M3: 专家宽度<br/>每个专家更强"]
+    Q2 -->|"精确 2x"| COMBO["M1+M2 组合\n专家数 + 深度"]
+    Q2 -->|"表达力优先"| M3["M3 专家宽度\n每个专家更强"]
+    style START fill:#2C3E50,color:#fff
+    style Q1 fill:#F1C40F,color:#333
+    style Q2 fill:#F1C40F,color:#333
     style M1 fill:#27AE60,color:#fff
-    style COMBO fill:#4A90D9,color:#fff
+    style COMBO fill:#3498DB,color:#fff
+    style M3 fill:#E74C3C,color:#fff
 ```
 
 **核心结论**：MoE 基座模型的参数扩展**首选 M1（专家数扩展）**——这是 MoE 架构独有的优势，能在推理成本几乎不变的前提下实现参数翻倍。配合效用导向的专家选择和 Cluster-Aware 对称性破坏，可以最大化扩展收益。
@@ -483,7 +572,7 @@ graph TD
 
 ## 五、关键技术问题深度分析
 
-### 4.1 初始化策略对比
+### 5.1 初始化策略对比
 
 | 策略 | 方法 | 即时精度 | 训练收敛 | 实现难度 |
 |------|------|---------|---------|---------|
@@ -494,12 +583,12 @@ graph TD
 | 掩码零填充 | MSG | **100%保持** | 中速 | 中 |
 | 结构感知插值 | Embiggened | 40-60%保持 | 需蒸馏 | 高 |
 
-### 4.2 层间冗余与有效深度
+### 5.2 层间冗余与有效深度
 
-arXiv:2512.14064 揭示：**许多 LLM 的深层存在显著冗余**。
+[arXiv:2512.14064](https://arxiv.org/abs/2512.14064) 揭示：**许多 LLM 的深层存在显著冗余**。该引用为 2025 年底预印本，使用前建议核对原文。
 
 - 层间表示余弦相似度在中间层往往 >0.95
-- 达摩院 DOCS (ICLR'25) 发现权重矩阵存在 "Patch-Like" 相关性分布
+- 权重矩阵存在 "Patch-Like" 相关性分布（参见层剪枝/冗余分析相关研究，如 [Layer Pruning](https://arxiv.org/abs/2403.19135)）
 - 移除 20-35% 中间层后，zero-shot 精度下降不超过 2%
 
 **对扩增的启示**：
@@ -507,7 +596,7 @@ arXiv:2512.14064 揭示：**许多 LLM 的深层存在显著冗余**。
 2. 简单加深不一定有效 — 冗余层的复制只增加更多冗余
 3. 修剪研究可反向指导扩展 — 被修剪影响最大的层最值得复制
 
-### 4.3 Continued Pretraining 最佳实践
+### 5.3 Continued Pretraining 最佳实践
 
 **学习率策略**（以 7B-14B 模型为例，需根据实际损失曲线微调）：
 
@@ -540,7 +629,7 @@ Phase 2（50-70% 训练量）: 解冻全部，LR 降为 Phase 1 的 1/5~1/10
 
 ## 六、全方法横向对比
 
-### 5.1 架构不变 vs 架构改变对比
+### 6.1 架构不变 vs 架构改变对比
 
 | 方法 | 路线 | Function Preserving | 扩展方向 | 即时精度 | 恢复数据量 | 推理效率影响 | 工业验证 |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -555,7 +644,7 @@ Phase 2（50-70% 训练量）: 解冻全部，LR 降为 Phase 1 的 1/5~1/10
 
 *注：MoE 的“近似不变”指 top-1 路由下的激活参数量；top-2 会引入额外计算。*
 
-### 5.2 成本效益分析（以 7B → 14B 为例估算）
+### 6.2 成本效益分析（以 7B → 14B 为例估算）
 
 | 方案 | 路线 | CPT 数据量 | GPU-Hours (H800) | 精度恢复 | 推理延迟 |
 |------|------|-----------|-----------------|---------|---------|
@@ -593,13 +682,21 @@ graph TD
     Q1 -->|否| Q2{"训练数据预算?"}
     Q1 -->|是| Q3{"关注侧重点?"}
     Q2 -->|"<20B tokens"| A["✅ A: LLaMA-Pro"]
-    Q2 -->|"20~100B tokens"| ALT1["备选: LESA"]
-    Q2 -->|">100B tokens"| ALT2["备选: SOLAR DUS"]
+    Q2 -->|"20~100B tokens"| ALT1["备选 LESA"]
+    Q2 -->|">100B tokens"| ALT2["备选 SOLAR DUS"]
     Q3 -->|推理效率| C["C: MoE Upcycling"]
     Q3 -->|总能力| Q4{"有 Teacher 模型?"}
     Q4 -->|有| D["D: 扩展+蒸馏"]
     Q4 -->|无| B["B: MSG 多维度"]
+    style START fill:#2C3E50,color:#fff
+    style Q1 fill:#F1C40F,color:#333
+    style Q2 fill:#F1C40F,color:#333
+    style Q3 fill:#F1C40F,color:#333
+    style Q4 fill:#F1C40F,color:#333
     style A fill:#27AE60,color:#fff
+    style ALT1 fill:#3498DB,color:#fff
+    style ALT2 fill:#3498DB,color:#fff
+    style B fill:#E67E22,color:#fff
     style C fill:#E74C3C,color:#fff
     style D fill:#9B59B6,color:#fff
 ```
@@ -744,28 +841,28 @@ Step 3: 少量 SFT 对齐
 
 ## 十、参考文献
 
-1. **SOLAR DUS**: Kim et al., "SOLAR 10.7B: Scaling Large Language Models with Simple yet Effective Depth Up-Scaling", arXiv:2312.15166 (2023)
-2. **Solar Pro**: Upstage, "Solar Pro Preview: Phi-3-medium → 22B via Enhanced DUS" (2024)
-3. **LLaMA-Pro**: Wu et al., "LLaMA Pro: Progressive LLaMA with Block Expansion", arXiv:2401.02415 (2024)
-4. **LESA**: Yang et al., "LESA: Learnable LLM Layer Scaling-Up", arXiv:2502.13794 (2025)
-5. **Net2Net**: Chen, Goodfellow & Shlens, "Net2Net: Accelerating Learning via Knowledge Transfer", ICLR 2016
-6. **MSG**: Du et al., "Masked Structural Growth for 2x Faster Pre-training", arXiv:2305.02869 (2023)
-7. **FLM-101B**: Li et al., "FLM-101B: An Open LLM and How to Train It with $100K Budget", arXiv:2309.03852 (2023)
-8. **Tele-FLM-1T**: TeleAI & BAAI, "Tele-FLM: An Open Billion-Parameter Language Model" (2024)
-9. **Sparse Upcycling**: Komatsuzaki et al., "Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints", ICLR 2023
-10. **Skywork-MoE**: Kunlun, "Skywork-MoE: A Production-Scale MoE Model via Upcycling" (2024)
-11. **Amazon Expert Reuse**: Amazon AI, "Expert Reuse for Mixture-of-Experts Scaling" (2025)
-12. **Effective Depth**: "What Affects the Effective Depth of LLMs?", arXiv:2512.14064 (2025)
-13. **DOCS**: Alibaba DAMO Academy, "DOCS: Detecting Out-of-Context Semantics" (ICLR 2025)
+1. **SOLAR DUS**: Kim et al., "SOLAR 10.7B: Scaling Large Language Models with Simple yet Effective Depth Up-Scaling", [arXiv:2312.15166](https://arxiv.org/abs/2312.15166) (2023)
+2. **Solar Pro**: Upstage, "Solar Pro Preview: Phi-3-medium → 22B via Enhanced DUS" (2024) — 官方技术报告，见 [Upstage Hugging Face](https://huggingface.co/upstage)
+3. **LLaMA-Pro**: Wu et al., "LLaMA Pro: Progressive LLaMA with Block Expansion", [arXiv:2401.02415](https://arxiv.org/abs/2401.02415) (2024)
+4. **LESA**: Yang et al., "LESA: Learnable LLM Layer Scaling-Up", [arXiv:2502.13794](https://arxiv.org/abs/2502.13794) (2025)
+5. **Net2Net**: Chen, Goodfellow & Shlens, "Net2Net: Accelerating Learning via Knowledge Transfer", [arXiv:1511.05641](https://arxiv.org/abs/1511.05641), ICLR 2016
+6. **MSG**: Du et al., "Masked Structural Growth for 2x Faster Pre-training", [arXiv:2305.02869](https://arxiv.org/abs/2305.02869) (2023)
+7. **FLM-101B**: Li et al., "FLM-101B: An Open LLM and How to Train It with $100K Budget", [arXiv:2309.03852](https://arxiv.org/abs/2309.03852) (2023)
+8. **Tele-FLM-1T**: TeleAI & BAAI, "Tele-FLM: An Open Billion-Parameter Language Model" (2024) — 见 [arXiv:2401.16600](https://arxiv.org/abs/2401.16600) 或官方仓库
+9. **Sparse Upcycling**: Komatsuzaki et al., "Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints", [arXiv:2212.05055](https://arxiv.org/abs/2212.05055), ICLR 2023
+10. **Skywork-MoE**: Kunlun, "Skywork-MoE: A Production-Scale MoE Model via Upcycling" (2024) — [Hugging Face 模型页](https://huggingface.co/Skywork/Skywork-MoE)
+11. **Amazon Expert Reuse**: Amazon AI, "Expert Reuse for Mixture-of-Experts Scaling" (2025) — 企业技术报告
+12. **Effective Depth**: "What Affects the Effective Depth of LLMs?", [arXiv:2512.14064](https://arxiv.org/abs/2512.14064) (2025)
+13. **层冗余分析**: 参见 [Streamlining Redundant Layers](https://arxiv.org/abs/2403.19135) 及 [What Affects the Effective Depth of LLMs?](https://arxiv.org/abs/2512.14064) 等关于层冗余与有效深度的研究
 14. **Deep Progressive Training**: Bu et al., "Scaling Up Depth Capacity of Large Language Models" (OpenReview 2025)
-15. **Qwen3-Embiggened**: cognitivecomputations, "Qwen3-72B-Embiggened" (2025)
-16. **Layer Pruning**: Chen et al., "Streamlining Redundant Layers of Large Language Models", arXiv:2403.19135 (2024)
-17. **DeepSeek-V2 MLA**: DeepSeek AI, "DeepSeek-V2: A Strong, Economical and Efficient Mixture-of-Experts Language Model", arXiv:2405.04434 (2024)
-18. **CPT Best Practices**: "Simple and Scalable Strategies for Continual Pre-training of Large Language Models" (2024)
-19. **Expert Upcycling**: Amazon AI, "Expert Upcycling: Shifting the Compute-Efficient Frontier of Mixture-of-Experts", arXiv:2604.19835 (2026)
-20. **Cluster-Aware Upcycling**: "Enhancing Mixture-of-Experts Specialization via Cluster-Aware Upcycling", arXiv:2604.13508 (2026)
-21. **Soft MoE**: Google DeepMind, "From Sparse to Soft Mixture of Experts" (2024)
-22. **MoE Redundancy**: "Exploiting Mixture-of-Experts Redundancy Unlocks Multimodal Generative Abilities", arXiv:2503.22517 (2025)
-23. **DeepSeek-V4**: DeepSeek AI, "DeepSeek-V4 Technical Report: 1.6T Parameters MoE" (2026)
+15. **Qwen3-Embiggened**: cognitivecomputations, "Qwen3-72B-Embiggened" (2025) — [Hugging Face](https://huggingface.co/cognitivecomputations/Qwen3-72B-Embiggened)
+16. **Layer Pruning**: Chen et al., "Streamlining Redundant Layers of Large Language Models", [arXiv:2403.19135](https://arxiv.org/abs/2403.19135) (2024)
+17. **DeepSeek-V2 MLA**: DeepSeek AI, "DeepSeek-V2: A Strong, Economical and Efficient Mixture-of-Experts Language Model", [arXiv:2405.04434](https://arxiv.org/abs/2405.04434) (2024)
+18. **CPT Best Practices**: "Simple and Scalable Strategies for Continual Pre-training of Large Language Models" (2024) — 可检索标题获取原文或社区整理版本
+19. **Expert Upcycling**: Amazon AI, "Expert Upcycling: Shifting the Compute-Efficient Frontier of Mixture-of-Experts", [arXiv:2604.19835](https://arxiv.org/abs/2604.19835) (2026) ⚠️ 非常新，请核对原文
+20. **Cluster-Aware Upcycling**: "Enhancing Mixture-of-Experts Specialization via Cluster-Aware Upcycling", [arXiv:2604.13508](https://arxiv.org/abs/2604.13508) (2026) ⚠️ 非常新，请核对原文
+21. **Soft MoE**: Google DeepMind, "From Sparse to Soft Mixture of Experts" (2024) — [arXiv:2308.00951](https://arxiv.org/abs/2308.00951)
+22. **MoE Redundancy**: "Exploiting Mixture-of-Experts Redundancy Unlocks Multimodal Generative Abilities", [arXiv:2503.22517](https://arxiv.org/abs/2503.22517) (2025)
+23. **DeepSeek-V3**: DeepSeek AI, "DeepSeek-V3 Technical Report" (2024) — [arXiv:2412.19437](https://arxiv.org/abs/2412.19437)
 
 *注：部分条目为社区/企业技术报告，未正式发表于顶会；2026 年的几篇引用非常新，引用前请尽量查找原文或官方发布页面以核实具体数字与方法细节。*
