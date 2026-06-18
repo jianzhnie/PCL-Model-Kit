@@ -14,12 +14,12 @@
 #   TARGET_EXPERTS=1024 bash scripts/expand_model_experts_group.sh
 #
 # Environment variables (override defaults):
-#   MODEL_DIR          - source model directory
-#   OUTPUT_DIR         - destination directory (auto-derived if not set)
-#   TARGET_EXPERTS     - target number of routed experts (default: double original)
-#   TARGET_ZERO_EXPERT - target number of zero experts (default: double original)
-#   NOISE_SCALE        - Gaussian noise scale for duplicated classifier weights (default: 0.0)
-#   WORKERS            - number of parallel workers for output shard writing (default: 1 = serial)
+#   MODEL_DIR            - source model directory
+#   OUTPUT_DIR           - destination directory (auto-derived if not set)
+#   TARGET_EXPERTS       - target number of routed experts (default: double original)
+#   ROUTER_NOISE_SCALE   - Gaussian noise scale for duplicated router weights (default: 0.0)
+#   EXPERT_NOISE_SCALE   - Gaussian noise scale for duplicated expert weights (default: 0.0)
+#   WORKERS              - number of parallel workers for output shard writing (default: 1 = serial)
 
 set -euo pipefail
 
@@ -30,8 +30,8 @@ EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_experts.py"
 
 # Positional args override env vars; both default to empty (auto-derive in Python)
 TARGET_EXPERTS="${1:-${TARGET_EXPERTS:-}}"
-TARGET_ZERO_EXPERT="${TARGET_ZERO_EXPERT:-}"
-NOISE_SCALE="${NOISE_SCALE:-}"
+ROUTER_NOISE_SCALE="${ROUTER_NOISE_SCALE:-}"
+EXPERT_NOISE_SCALE="${EXPERT_NOISE_SCALE:-}"
 WORKERS="${WORKERS:-}"
 
 # Default paths - update these as needed
@@ -44,9 +44,6 @@ if [ -n "$TARGET_EXPERTS" ]; then
 else
     SUFFIX="2xE"
 fi
-if [ -n "$TARGET_ZERO_EXPERT" ]; then
-    SUFFIX="${SUFFIX}-${TARGET_ZERO_EXPERT}Zero-E"
-fi
 SUFFIX="${SUFFIX}-Group"
 
 OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/expand/LongCat-Flash-Chat-${SUFFIX}}"
@@ -54,13 +51,13 @@ OUTPUT_DIR="${OUTPUT_DIR:-/llm_workspace_1P/robin/hfhub/models/meituan-longcat/e
 echo "============================================"
 echo "  Expand MoE Experts (Grouped Routing)"
 echo "============================================"
-echo "Model dir:      ${MODEL_DIR}"
-echo "Output dir:     ${OUTPUT_DIR}"
-echo "Target Experts: ${TARGET_EXPERTS:-auto}"
-echo "Target Zero Experts: ${TARGET_ZERO_EXPERT:-auto}"
-echo "Routing:        group-then-select (topk unchanged)"
-echo "Noise Scale:    ${NOISE_SCALE:-0.0}"
-echo "Workers:        ${WORKERS:-1}"
+echo "Model dir:         ${MODEL_DIR}"
+echo "Output dir:        ${OUTPUT_DIR}"
+echo "Target Experts:    ${TARGET_EXPERTS:-auto (2x)}"
+echo "Routing:           group-then-select (topk unchanged)"
+echo "Router Noise:      ${ROUTER_NOISE_SCALE:-0.0}"
+echo "Expert Noise:      ${EXPERT_NOISE_SCALE:-0.0}"
+echo "Workers:           ${WORKERS:-1}"
 
 if [ ! -d "$MODEL_DIR" ]; then
     echo "ERROR: Model directory not found: $MODEL_DIR"
@@ -79,8 +76,12 @@ if [ -n "$TARGET_EXPERTS" ]; then
     CMD+=(--target_experts "$TARGET_EXPERTS")
 fi
 
-if [ -n "$NOISE_SCALE" ]; then
-    CMD+=(--noise-scale "$NOISE_SCALE")
+if [ -n "$ROUTER_NOISE_SCALE" ]; then
+    CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
+fi
+
+if [ -n "$EXPERT_NOISE_SCALE" ]; then
+    CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
 fi
 
 if [ -n "$WORKERS" ]; then

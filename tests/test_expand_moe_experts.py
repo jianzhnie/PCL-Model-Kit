@@ -726,7 +726,7 @@ class TestExpandMoeExperts(unittest.TestCase):
             "--model_dir", str(self.model_dir),
             "--output_dir", str(self.output_dir),
             "--target_experts", "8",
-            "--noise-scale", "1e-6",
+            "--router-noise-scale", "1e-6",
             "--workers", "3",
         ]
         expand_main()

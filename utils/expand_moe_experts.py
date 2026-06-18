@@ -17,7 +17,7 @@ Usage:
       --output_dir ./expanded_model \
       [--target_experts 1024] \
       [--target_topk 24] \
-      [--noise-scale 1e-6]
+      [--router-noise-scale 1e-6]
 """
 
 import argparse
@@ -182,14 +182,14 @@ def expand_router_weight(
     original_experts: int,
     zero_expert_num: int,
     expansion_factor: int,
-    noise_scale: float = 0.0,
+    router_noise_scale: float = 0.0,
 ) -> torch.Tensor:
     """Expand a router classifier/gate weight with optional noise on copies.
 
     Layout: [real_experts * expansion_factor, zero_experts * expansion_factor]
 
-    When noise_scale > 0, duplicated blocks get small Gaussian noise to break
-    symmetry so that fine-tuning can differentiate them.
+    When router_noise_scale > 0, duplicated blocks get small Gaussian noise to
+    break symmetry so that fine-tuning can differentiate them.
     """
     if zero_expert_num > 0:
         real_part = tensor[:original_experts]
@@ -198,11 +198,10 @@ def expand_router_weight(
         real_part = tensor
         zero_part = None
 
-    # Build real expert blocks — first copy exact, rest with noise
     real_blocks = [real_part]
     for _ in range(1, expansion_factor):
-        if noise_scale > 0:
-            noise = torch.randn_like(real_part) * noise_scale * real_part.std()
+        if router_noise_scale > 0:
+            noise = torch.randn_like(real_part) * router_noise_scale * real_part.std()
             real_blocks.append(real_part + noise)
         else:
             real_blocks.append(real_part)
@@ -222,7 +221,7 @@ def expand_router_bias(
     expansion_factor: int,
 ) -> torch.Tensor:
     """Expand a router score correction bias (exact copies, no noise)."""
-    return expand_router_weight(tensor, original_experts, zero_expert_num, expansion_factor, noise_scale=0.0)
+    return expand_router_weight(tensor, original_experts, zero_expert_num, expansion_factor, router_noise_scale=0.0)
 
 
 def _expand_tensor(
@@ -233,7 +232,8 @@ def _expand_tensor(
     expansion_factor: int,
     source_to_targets: dict[int, list[int]],
     target_experts: int,
-    noise_scale: float = 0.0,
+    router_noise_scale: float = 0.0,
+    expert_noise_scale: float = 0.0,
 ) -> dict[str, torch.Tensor]:
     """Expand a single tensor, returning {output_key: expanded_tensor}."""
     total_routed = original_experts + zero_expert_num
@@ -241,7 +241,7 @@ def _expand_tensor(
     if is_router_weight(key):
         validate_router_shape(key, list(tensor.shape), total_routed)
         return {key: expand_router_weight(
-            tensor, original_experts, zero_expert_num, expansion_factor, noise_scale,
+            tensor, original_experts, zero_expert_num, expansion_factor, router_noise_scale,
         )}
     elif is_router_bias(key):
         validate_router_shape(key, list(tensor.shape), total_routed)
@@ -255,7 +255,11 @@ def _expand_tensor(
             result[key] = tensor
             for new_expert_idx in source_to_targets.get(expert_idx, []):
                 new_key = make_expert_key(layer_idx, new_expert_idx, rest)
-                result[new_key] = tensor.clone()
+                if expert_noise_scale > 0:
+                    noise = torch.randn_like(tensor) * expert_noise_scale * tensor.std()
+                    result[new_key] = tensor + noise
+                else:
+                    result[new_key] = tensor.clone()
         else:
             base_new_idx = expert_idx - original_experts + target_experts
             new_key = make_expert_key(layer_idx, base_new_idx, rest)
@@ -312,7 +316,7 @@ def plan_output_layout(
                     current_bytes = 0
                 current_bytes += output_nbytes
                 total_output_bytes += output_nbytes
-                if action == "clone":
+                if action in ("clone", "clone_exact"):
                     total_duplicated += 1
                 else:
                     total_original += 1
@@ -331,7 +335,9 @@ def _expand_tensor_meta(key: str, dtype: str, shape: list[int],
                         target_experts: int) -> list[tuple[str, int, str]]:
     """Return list of (output_key, output_nbytes, action) for an input tensor.
 
-    action is one of: "keep", "clone", "router_weight", "router_bias"
+    action is one of: "keep", "clone", "clone_exact", "router_weight", "router_bias"
+    - "clone": routed expert copy (may receive expert noise)
+    - "clone_exact": zero expert copy (always exact, no noise)
     Mirrors the actual expansion logic but operates on metadata only.
     """
     results: list[tuple[str, int, str]] = []
@@ -364,7 +370,7 @@ def _expand_tensor_meta(key: str, dtype: str, shape: list[int],
             for f in range(1, expansion_factor):
                 copy_idx = target_experts + zero_offset + f * zero_expert_num
                 copy_key = make_expert_key(layer_idx, copy_idx, rest)
-                results.append((copy_key, nbytes, "clone"))
+                results.append((copy_key, nbytes, "clone_exact"))
     else:
         results.append((key, nbytes, "keep"))
 
@@ -413,7 +419,7 @@ def _pre_scan_assignments(
                     (shard_file, key, output_key, action))
                 current_bytes += output_nbytes
                 total_output_bytes += output_nbytes
-                if action == "clone":
+                if action in ("clone", "clone_exact"):
                     total_duplicated += 1
                 else:
                     total_original += 1
@@ -427,12 +433,12 @@ def _write_output_shard(args):
 
     Args is a tuple of:
       (output_path, assignments, model_dir_str, original_experts, zero_expert_num,
-       expansion_factor, noise_scale)
+       expansion_factor, router_noise_scale, expert_noise_scale)
 
     assignments: list of (input_shard, input_key, output_key, action)
     """
     (output_path, assignments, model_dir_str, original_experts, zero_expert_num,
-     expansion_factor, noise_scale) = args
+     expansion_factor, router_noise_scale, expert_noise_scale) = args
 
     model_dir = Path(model_dir_str)
     by_input: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
@@ -443,16 +449,26 @@ def _write_output_shard(args):
     try:
         for sfile, items in by_input.items():
             with safe_open(str(model_dir / sfile), framework="pt", device="cpu") as sf:
+                tensor_cache: dict[str, torch.Tensor] = {}
                 for in_key, out_key, action in items:
-                    tensor = sf.get_tensor(in_key)
+                    if in_key not in tensor_cache:
+                        tensor_cache[in_key] = sf.get_tensor(in_key)
+                    tensor = tensor_cache[in_key]
+
                     if action == "keep":
                         tensors[out_key] = tensor
                     elif action == "clone":
+                        if expert_noise_scale > 0:
+                            noise = torch.randn_like(tensor) * expert_noise_scale * tensor.std()
+                            tensors[out_key] = tensor + noise
+                        else:
+                            tensors[out_key] = tensor.clone()
+                    elif action == "clone_exact":
                         tensors[out_key] = tensor.clone()
                     elif action == "router_weight":
                         tensors[out_key] = expand_router_weight(
                             tensor, original_experts, zero_expert_num,
-                            expansion_factor, noise_scale,
+                            expansion_factor, router_noise_scale,
                         )
                     elif action == "router_bias":
                         tensors[out_key] = expand_router_bias(
@@ -489,9 +505,13 @@ def main():
                              "Keeps moe_topk unchanged and adds use_group_routing + "
                              "expert_expansion_factor to config. "
                              "Mutually exclusive with --target_topk.")
-    parser.add_argument("--noise-scale", type=float, default=0.0,
-                        help="Gaussian noise scale for duplicated classifier weights "
+    parser.add_argument("--router-noise-scale", type=float, default=0.0,
+                        help="Gaussian noise scale for duplicated router weights "
                              "(default 0.0 = exact copies; recommend 1e-6 to break symmetry)")
+    parser.add_argument("--expert-noise-scale", type=float, default=0.0,
+                        help="Gaussian noise scale for duplicated expert weights "
+                             "(default 0.0 = exact copies; recommend 0.01 for aggressive "
+                             "symmetry breaking per arXiv:2604.19835)")
     parser.add_argument("--workers", type=int, default=1,
                         help="Number of worker processes for parallel output shard "
                              "writing (default 1 = serial; use 0 for CPU count)")
@@ -551,8 +571,10 @@ def main():
     if zero_expert_num > 0:
         print(f"Zero expert:  {zero_expert_num}  →  {target_zero_expert_num}")
         print(f"Router dim:   {total_routed}  →  {target_experts + target_zero_expert_num}")
-    if args.noise_scale > 0:
-        print(f"Noise scale:  {args.noise_scale}")
+    if args.router_noise_scale > 0:
+        print(f"Router noise: {args.router_noise_scale}")
+    if args.expert_noise_scale > 0:
+        print(f"Expert noise: {args.expert_noise_scale}")
 
     shard_files = sorted(set(index["weight_map"].values()))
     experts_by_layer = validate_expert_layout(index, original_experts, zero_expert_num)
@@ -615,7 +637,8 @@ def main():
                 original_experts,
                 zero_expert_num,
                 expansion_factor,
-                args.noise_scale,
+                args.router_noise_scale,
+                args.expert_noise_scale,
             ))
 
         print("\nPass 2/2: Writing output shards...")
@@ -678,7 +701,7 @@ def main():
                     for out_key, expanded in _expand_tensor(
                         key, tensor, original_experts, zero_expert_num,
                         expansion_factor, source_to_targets, target_experts,
-                        args.noise_scale,
+                        args.router_noise_scale, args.expert_noise_scale,
                     ).items():
                         nbytes = tensor_nbytes(expanded)
                         maybe_flush(nbytes)
