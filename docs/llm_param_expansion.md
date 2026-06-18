@@ -78,6 +78,7 @@ graph LR
 - **训练需求**：由于新层直接复制原层且未做恒等初始化，初始精度下降明显，需要 100B+ tokens 重新训练。
 
 **量化评估**：
+
 - 即时精度：显著下降（非 function-preserving），约保持 50-80%
 - 恢复训练量：100B+ tokens
 - 计算效率：相比从头训练节省 60-70%
@@ -129,6 +130,7 @@ new_block.mlp.down_proj.weight.data.zero_()       # MLP 输出 → 零
 - **冻结策略**：冻结原始块仅训练新块，在通用能力保持上明显更好
 
 **量化评估**：
+
 - 即时精度：**零损失**（function-preserving）
 - 恢复训练量：8-16B tokens
 - 通用能力保持：< 1% 下降；领域能力：代码 +5-8%，数学 +3-5%
@@ -834,7 +836,7 @@ Step 3: 少量 SFT 对齐
 **落地建议**：
 1. 若选择 **LLaMA-Pro / MoE 深度扩展（M2）**：当前 `expand_model_layers.py` 仅做简单复制，需在复制后将新块/新层的 `o_proj` / `down_proj` 置零，才能实现恒等映射
 2. 若选择 **MSG / M3 专家宽度扩展**：仓库尚未实现宽度/FFN 的掩码生长，需要新增按维度零填充与渐进解锁逻辑
-3. 若选择 **MoE Upcycling / M1 专家数扩展**：可直接使用 `expand_moe_experts.py` 将 FFN 或已有专家复制为多份，并通过 `--noise-scale` 等参数打破对称性，再补充 Router 训练与 load balancing loss
+3. 若选择 **MoE Upcycling / M1 专家数扩展**：可直接使用 `expand_moe_experts.py` 将 FFN 或已有专家复制为多份，并通过 `--router-noise-scale` / `--expert-noise-scale` 等参数打破对称性，再补充 Router 训练与 load balancing loss
 4. 无论哪种方案，扩展后先用 `verify_expanded_weights.py` 验证原始参数未被意外修改
 
 ---
