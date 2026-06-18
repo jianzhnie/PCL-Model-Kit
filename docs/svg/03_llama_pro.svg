@@ -1,40 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" font-family="system-ui,-apple-system,sans-serif">
-<defs>
-  <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
-  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
-  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444"/></marker>
-  <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
-  <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/></filter>
-</defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 290" font-family="system-ui,-apple-system,sans-serif">
+<defs><marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B" /></marker><marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981" /></marker><marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444" /></marker><marker id="ap" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#7C3AED" /></marker><linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED" /><stop offset="100%" stop-color="#FFEDD5" /></linearGradient><pattern id="noise" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".7" fill="#EF4444" opacity=".5" /><circle cx="4" cy="4" r=".7" fill="#EF4444" opacity=".5" /></pattern><pattern id="zp" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#FEF2F2" /><line x1="0" y1="8" x2="8" y2="0" stroke="#FECACA" stroke-width=".8" /></pattern><filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".08" /></filter></defs>
 
-  <text x="400" y="24" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">LLaMA-Pro — Identity Block Expansion</text>
-  <line x1="190" y1="36" x2="610" y2="36" stroke="#CBD5E1"/>
-  <g transform="translate(30,50)">
-    <rect x="0" y="8" width="70" height="34" rx="6" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5" filter="url(#sh)"/>
-    <text x="35" y="30" text-anchor="middle" font-size="12" fill="#1E40AF" font-weight="700">Input x</text>
-    <line x1="70" y1="25" x2="90" y2="25" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
-    <rect x="92" y="8" width="78" height="34" rx="5" fill="#F1F5F9" stroke="#94A3B8" filter="url(#sh)"/>
-    <text x="131" y="30" text-anchor="middle" font-size="11" fill="#475569">RMSNorm</text>
-    <line x1="170" y1="25" x2="190" y2="25" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
-    <rect x="192" y="8" width="90" height="34" rx="5" fill="#DBEAFE" stroke="#3B82F6" filter="url(#sh)"/>
-    <text x="237" y="30" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="600">Self-Attn</text>
-    <line x1="282" y1="25" x2="302" y2="25" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
-    <rect x="304" y="4" width="110" height="42" rx="5" fill="#FEE2E2" stroke="#EF4444" stroke-width="2" filter="url(#sh)"/>
-    <text x="359" y="22" text-anchor="middle" font-size="12" fill="#DC2626" font-weight="800">o_proj = 0</text>
-    <text x="359" y="38" text-anchor="middle" font-size="10" fill="#DC2626">output = 0</text>
-    <line x1="414" y1="25" x2="444" y2="25" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
-    <circle cx="462" cy="25" r="16" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/>
-    <text x="462" y="31" text-anchor="middle" font-size="16" font-weight="700" fill="#059669">+</text>
-    <line x1="478" y1="25" x2="510" y2="25" stroke="#10B981" stroke-width="2" marker-end="url(#ag)"/>
-    <rect x="512" y="8" width="80" height="34" rx="6" fill="#D1FAE5" stroke="#10B981" stroke-width="1.5" filter="url(#sh)"/>
-    <text x="552" y="30" text-anchor="middle" font-size="12" fill="#047857" font-weight="700">= x</text>
-    <text x="620" y="30" font-size="13" fill="#059669" font-weight="700">x + 0 = x ✓</text>
-    <path d="M35,42 L35,75 L462,75 L462,41" stroke="#10B981" stroke-width="2.5" fill="none" stroke-dasharray="6,4"/>
-    <text x="250" y="92" text-anchor="middle" font-size="12" fill="#10B981" font-weight="700">Residual Bypass: x + 0 = x → Identity</text>
-  </g>
-  <rect x="30" y="148" width="740" height="38" rx="8" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="5,3"/>
-  <text x="400" y="166" text-anchor="middle" font-size="11" fill="#475569">MLP path likewise: RMSNorm → SwiGLU → <tspan fill="#DC2626" font-weight="700">down_proj = 0</tspan> → output 0 → residual x + 0 = x</text>
-  <text x="400" y="180" text-anchor="middle" font-size="11" fill="#059669" font-weight="600">Both zero projections make the entire new block a strict identity map</text>
-  <text x="400" y="210" text-anchor="middle" font-size="11" fill="#059669" font-weight="700">✓ Function-Preserving — Zero accuracy loss — Only 8-16B tokens to recover</text>
-
+<text x="450" y="28" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A">LLaMA-Pro &#8212; Identity Block Expansion</text><line x1="200" y1="40" x2="700" y2="40" stroke="#CBD5E1" />
+<rect x="60" y="52" width="780" height="160" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6,3" />
+<text x="80" y="72" font-size="10" fill="#94A3B8" font-weight="600">NEW IDENTITY BLOCK &#8212; ATTENTION PATH</text>
+<g transform="translate(80,86)">
+  <rect x="0" y="4" width="80" height="38" rx="6" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5" filter="url(#sh)" /><text x="40" y="28" text-anchor="middle" font-size="12" fill="#1E40AF" font-weight="700">Input x</text>
+  <line x1="80" y1="23" x2="100" y2="23" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)" />
+  <rect x="102" y="4" width="85" height="38" rx="6" fill="#F1F5F9" stroke="#94A3B8" filter="url(#sh)" /><text x="144" y="28" text-anchor="middle" font-size="11" fill="#475569">RMSNorm</text>
+  <line x1="187" y1="23" x2="207" y2="23" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)" />
+  <rect x="209" y="4" width="100" height="38" rx="6" fill="#DBEAFE" stroke="#3B82F6" filter="url(#sh)" /><text x="259" y="28" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="600">Self-Attn</text>
+  <line x1="309" y1="23" x2="329" y2="23" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)" />
+  <rect x="331" y="0" width="120" height="46" rx="6" fill="#FEE2E2" stroke="#EF4444" stroke-width="2" filter="url(#sh)" /><text x="391" y="20" text-anchor="middle" font-size="12" fill="#DC2626" font-weight="800">o_proj = 0</text><text x="391" y="38" text-anchor="middle" font-size="10" fill="#DC2626">output = 0</text>
+  <line x1="451" y1="23" x2="485" y2="23" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)" />
+  <circle cx="505" cy="23" r="18" fill="#D1FAE5" stroke="#10B981" stroke-width="2" /><text x="505" y="29" text-anchor="middle" font-size="18" font-weight="700" fill="#059669">+</text>
+  <line x1="523" y1="23" x2="558" y2="23" stroke="#10B981" stroke-width="2" marker-end="url(#ag)" />
+  <rect x="560" y="4" width="90" height="38" rx="6" fill="#D1FAE5" stroke="#10B981" stroke-width="1.5" filter="url(#sh)" /><text x="605" y="28" text-anchor="middle" font-size="13" fill="#047857" font-weight="700">= x</text>
+  <text x="680" y="28" font-size="14" fill="#059669" font-weight="700">x + 0 = x &#10003;</text>
+  <path d="M40,42 L40,82 L505,82 L505,41" stroke="#10B981" stroke-width="2.5" fill="none" stroke-dasharray="6,4" />
+  <text x="275" y="100" text-anchor="middle" font-size="12" fill="#10B981" font-weight="700">Residual Bypass: x + 0 = x &#8594; Strict Identity Mapping</text>
+</g>
+<rect x="60" y="220" width="780" height="40" rx="8" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="5,3" />
+<text x="450" y="240" text-anchor="middle" font-size="11" fill="#475569">MLP path likewise: RMSNorm &#8594; SwiGLU &#8594; <tspan fill="#DC2626" font-weight="700">down_proj = 0</tspan> &#8594; output 0 &#8594; residual x + 0 = x</text>
 </svg>

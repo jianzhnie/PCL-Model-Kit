@@ -1,27 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 140" font-family="system-ui,-apple-system,sans-serif">
-<defs>
-  <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
-  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
-  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444"/></marker>
-  <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
-  <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/></filter>
-</defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 204" font-family="system-ui,-apple-system,sans-serif">
+<defs><marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B" /></marker><marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981" /></marker><marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444" /></marker><marker id="ap" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#7C3AED" /></marker><linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED" /><stop offset="100%" stop-color="#FFEDD5" /></linearGradient><pattern id="noise" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".7" fill="#EF4444" opacity=".5" /><circle cx="4" cy="4" r=".7" fill="#EF4444" opacity=".5" /></pattern><pattern id="zp" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#FEF2F2" /><line x1="0" y1="8" x2="8" y2="0" stroke="#FECACA" stroke-width=".8" /></pattern><filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".08" /></filter></defs>
 
-  <text x="400" y="24" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">Expansion + Knowledge Distillation Pipeline</text>
-  <line x1="180" y1="36" x2="620" y2="36" stroke="#CBD5E1"/>
-  <g transform="translate(10,50)">
-    <rect x="0" y="0" width="95" height="44" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2" filter="url(#sh)"/><text x="47" y="18" text-anchor="middle" font-size="10" fill="#1E40AF" font-weight="600">Small Model</text><text x="47" y="34" text-anchor="middle" font-size="9" fill="#64748B">Qwen3-32B</text>
-    <line x1="95" y1="22" x2="118" y2="22" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)"/>
-    <rect x="120" y="0" width="110" height="44" rx="6" fill="#EF4444" filter="url(#sh)"/><text x="175" y="18" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">Expanded ~72B</text><text x="175" y="34" text-anchor="middle" font-size="9" fill="#FECACA">func-preserving</text>
-    <line x1="230" y1="22" x2="253" y2="22" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)"/>
-    <rect x="255" y="0" width="130" height="44" rx="6" fill="#3B82F6" filter="url(#sh)"/><text x="320" y="18" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">Distillation</text><text x="320" y="34" text-anchor="middle" font-size="9" fill="#BFDBFE">L = CE + KL</text>
-    <rect x="255" y="58" width="130" height="32" rx="6" fill="#8B5CF6" filter="url(#sh)"/><text x="320" y="79" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">Teacher 235B</text>
-    <line x1="320" y1="58" x2="320" y2="44" stroke="#7C3AED" stroke-width="2" stroke-dasharray="5,3"/>
-    <line x1="385" y1="22" x2="408" y2="22" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)"/>
-    <rect x="410" y="0" width="85" height="44" rx="6" fill="#F97316" filter="url(#sh)"/><text x="452" y="18" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">SFT Align</text><text x="452" y="34" text-anchor="middle" font-size="9" fill="#FED7AA">few data</text>
-    <line x1="495" y1="22" x2="518" y2="22" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)"/>
-    <rect x="520" y="0" width="130" height="44" rx="6" fill="#10B981" filter="url(#sh)"/><text x="585" y="18" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">Final Model</text><text x="585" y="34" text-anchor="middle" font-size="9" fill="#D1FAE5">Highest quality ceiling</text>
-    <text x="680" y="74" font-size="9" fill="#7C3AED" font-weight="600">soft labels</text>
-  </g>
-
+<text x="450" y="28" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A">Expansion + Knowledge Distillation Pipeline</text><line x1="200" y1="40" x2="700" y2="40" stroke="#CBD5E1" />
+<rect x="20" y="52" width="860" height="100" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6,3" />
+<text x="40" y="72" font-size="10" fill="#94A3B8" font-weight="600">PIPELINE STAGES</text>
+<g transform="translate(40,82)">
+  <rect x="0" y="0" width="105" height="50" rx="8" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2" filter="url(#sh)" /><text x="52" y="20" text-anchor="middle" font-size="10" fill="#1E40AF" font-weight="600">Small Model</text><text x="52" y="38" text-anchor="middle" font-size="9" fill="#64748B">e.g. Qwen3-32B</text>
+  <line x1="105" y1="25" x2="133" y2="25" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)" /><text x="119" y="16" font-size="8" fill="#94A3B8">LLaMA-Pro</text>
+  <rect x="135" y="0" width="120" height="50" rx="8" fill="#EF4444" filter="url(#sh)" /><text x="195" y="20" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">Expanded ~72B</text><text x="195" y="38" text-anchor="middle" font-size="9" fill="#FECACA">func-preserving</text>
+  <line x1="255" y1="25" x2="283" y2="25" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)" />
+  <rect x="285" y="0" width="140" height="50" rx="8" fill="#3B82F6" filter="url(#sh)" /><text x="355" y="20" text-anchor="middle" font-size="11" fill="#fff" font-weight="600">Distillation</text><text x="355" y="38" text-anchor="middle" font-size="9" fill="#BFDBFE">L = &#955;&#183;CE + (1-&#955;)&#183;T&#178;&#183;KL</text>
+  <rect x="285" y="56" width="140" height="36" rx="8" fill="#8B5CF6" filter="url(#sh)" /><text x="355" y="78" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">Teacher 235B-A22B</text>
+  <line x1="355" y1="56" x2="355" y2="50" stroke="#7C3AED" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#ap)" /><text x="432" y="72" font-size="9" fill="#7C3AED" font-weight="600">soft labels</text>
+  <line x1="425" y1="25" x2="453" y2="25" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)" />
+  <rect x="455" y="0" width="95" height="50" rx="8" fill="#F97316" filter="url(#sh)" /><text x="502" y="20" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">SFT Align</text><text x="502" y="38" text-anchor="middle" font-size="9" fill="#FED7AA">few instruct data</text>
+  <line x1="550" y1="25" x2="578" y2="25" stroke="#64748B" stroke-width="1.8" marker-end="url(#ah)" />
+  <rect x="580" y="0" width="155" height="50" rx="8" fill="#10B981" filter="url(#sh)" /><text x="657" y="20" text-anchor="middle" font-size="12" fill="#fff" font-weight="700">Final Model</text><text x="657" y="38" text-anchor="middle" font-size="9" fill="#D1FAE5">Highest quality ceiling</text>
+</g>
 </svg>

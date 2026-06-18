@@ -1,30 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 140" font-family="system-ui,-apple-system,sans-serif">
-<defs>
-  <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
-  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
-  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444"/></marker>
-  <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
-  <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/></filter>
-</defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 202" font-family="system-ui,-apple-system,sans-serif">
+<defs><marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B" /></marker><marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981" /></marker><marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444" /></marker><marker id="ap" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#7C3AED" /></marker><linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED" /><stop offset="100%" stop-color="#FFEDD5" /></linearGradient><pattern id="noise" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".7" fill="#EF4444" opacity=".5" /><circle cx="4" cy="4" r=".7" fill="#EF4444" opacity=".5" /></pattern><pattern id="zp" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#FEF2F2" /><line x1="0" y1="8" x2="8" y2="0" stroke="#FECACA" stroke-width=".8" /></pattern><filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".08" /></filter></defs>
 
-  <text x="390" y="24" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">LESA — SVD-based Interpolation for New Layers</text>
-  <line x1="170" y1="36" x2="610" y2="36" stroke="#CBD5E1"/>
-  <g transform="translate(50,48)">
-    <rect x="0" y="0" width="90" height="34" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2" filter="url(#sh)"/><text x="45" y="22" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="600">Layer i</text>
-    <rect x="0" y="46" width="90" height="34" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2" filter="url(#sh)"/><text x="45" y="68" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="600">Layer i+1</text>
-    <line x1="90" y1="17" x2="125" y2="32" stroke="#64748B" stroke-width="1.2"/><text x="104" y="16" font-size="9" fill="#94A3B8" font-weight="600">SVD</text>
-    <line x1="90" y1="63" x2="125" y2="48" stroke="#64748B" stroke-width="1.2"/><text x="104" y="72" font-size="9" fill="#94A3B8" font-weight="600">SVD</text>
-    <rect x="127" y="22" width="120" height="36" rx="6" fill="#3B82F6" filter="url(#sh)"/><text x="187" y="38" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">Predictor Net</text><text x="187" y="52" text-anchor="middle" font-size="9" fill="#BFDBFE">lightweight</text>
-    <line x1="247" y1="40" x2="275" y2="40" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
-    <rect x="277" y="24" width="90" height="32" rx="6" fill="#10B981" filter="url(#sh)"/><text x="322" y="45" text-anchor="middle" font-size="12" fill="#fff" font-weight="700">W_new</text>
-    <line x1="367" y1="40" x2="395" y2="40" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
-    <rect x="397" y="6" width="150" height="68" rx="8" fill="#F8FAFC" stroke="#10B981" stroke-width="1.5"/>
-    <text x="472" y="28" text-anchor="middle" font-size="10" fill="#64748B">Layer i</text>
-    <text x="472" y="46" text-anchor="middle" font-size="13" fill="#10B981" font-weight="700">↓ New Layer ↓</text>
-    <text x="472" y="62" text-anchor="middle" font-size="10" fill="#64748B">Layer i+1</text>
-    <text x="598" y="34" font-size="10" fill="#D97706" font-weight="600">Approx FP</text>
-    <text x="598" y="50" font-size="10" fill="#D97706">Acc: 80-90%</text>
-    <text x="598" y="66" font-size="10" fill="#475569">Fastest convergence</text>
-  </g>
-
+<text x="450" y="28" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A">LESA &#8212; SVD-based Interpolation for New Layers</text><line x1="200" y1="40" x2="700" y2="40" stroke="#CBD5E1" />
+<rect x="40" y="52" width="820" height="120" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6,3" />
+<text x="60" y="72" font-size="10" fill="#94A3B8" font-weight="600">PREDICTION PIPELINE</text>
+<g transform="translate(70,82)">
+  <rect x="0" y="0" width="100" height="38" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2" filter="url(#sh)" /><text x="50" y="24" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="600">Layer i</text>
+  <rect x="0" y="50" width="100" height="38" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2" filter="url(#sh)" /><text x="50" y="74" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="600">Layer i+1</text>
+  <line x1="100" y1="19" x2="142" y2="36" stroke="#64748B" stroke-width="1.2" /><text x="118" y="18" font-size="10" fill="#94A3B8" font-weight="600">SVD</text>
+  <line x1="100" y1="69" x2="142" y2="52" stroke="#64748B" stroke-width="1.2" /><text x="118" y="80" font-size="10" fill="#94A3B8" font-weight="600">SVD</text>
+  <rect x="144" y="22" width="140" height="44" rx="8" fill="#3B82F6" filter="url(#sh)" /><text x="214" y="42" text-anchor="middle" font-size="12" fill="#fff" font-weight="700">Predictor Network</text><text x="214" y="58" text-anchor="middle" font-size="9" fill="#BFDBFE">lightweight (~5% cost)</text>
+  <line x1="284" y1="44" x2="318" y2="44" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)" />
+  <rect x="320" y="26" width="110" height="36" rx="8" fill="#10B981" filter="url(#sh)" /><text x="375" y="49" text-anchor="middle" font-size="13" fill="#fff" font-weight="700">W_new</text>
+  <line x1="430" y1="44" x2="464" y2="44" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)" />
+  <rect x="466" y="4" width="170" height="80" rx="10" fill="#fff" stroke="#10B981" stroke-width="1.5" />
+  <text x="551" y="28" text-anchor="middle" font-size="10" fill="#64748B">Layer i</text>
+  <text x="551" y="50" text-anchor="middle" font-size="14" fill="#10B981" font-weight="700">&#8595; New Layer &#8595;</text>
+  <text x="551" y="70" text-anchor="middle" font-size="10" fill="#64748B">Layer i+1</text>
+  <rect x="655" y="12" width="100" height="64" rx="8" fill="#FFFBEB" stroke="#FDE68A" />
+  <text x="705" y="36" text-anchor="middle" font-size="10" fill="#D97706" font-weight="700">Approx FP</text>
+  <text x="705" y="52" text-anchor="middle" font-size="10" fill="#D97706">Acc: 80-90%</text>
+  <text x="705" y="68" text-anchor="middle" font-size="9" fill="#475569">Fastest converge</text>
+</g>
 </svg>
