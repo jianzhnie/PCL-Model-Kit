@@ -48,8 +48,7 @@ from utils.shared import (
 )
 
 ZERO_PATTERNS = [
-    re.compile(r"self_attn\.\d*\.?o_proj\.weight$"),
-    re.compile(r"self_attn\.o_proj\.weight$"),
+    re.compile(r"self_attn\.(?:\d+\.)?o_proj\.weight$"),
     re.compile(r"mlp\.experts\.\d+\.down_proj\.weight$"),
     re.compile(r"mlps\.\d+\.down_proj\.weight$"),
     re.compile(r"mlp\.down_proj\.weight$"),
@@ -76,7 +75,7 @@ def build_layer_mapping(
     which original layer it comes from and whether it's a new identity layer.
 
     insertion_mode:
-      - "interleave": insert new layers after each original layer
+      - "interleave": insert new identity layers after their source layer
       - "append": original layers first, then new layers at the end
     """
     num_new = target_layers - original_layers
@@ -87,25 +86,23 @@ def build_layer_mapping(
             mapping.append((source_list[offset], True))
         return mapping
 
-    mapping = []
-    new_per_original = [0] * original_layers
-    for offset, src in enumerate(source_list):
-        new_per_original[src] += 1
+    new_by_source: dict[int, int] = defaultdict(int)
+    for src in source_list:
+        new_by_source[src] += 1
 
-    new_offset = 0
+    mapping = []
     for orig_idx in range(original_layers):
         mapping.append((orig_idx, False))
-        count = new_per_original[orig_idx]
+        count = new_by_source.get(orig_idx, 0)
         for _ in range(count):
-            mapping.append((source_list[new_offset], True))
-            new_offset += 1
+            mapping.append((orig_idx, True))
 
-    if len(mapping) != target_layers:
-        leftover = num_new - new_offset
-        for i in range(leftover):
-            mapping.append((source_list[new_offset + i], True))
-
-    return mapping[:target_layers]
+    assert len(mapping) == target_layers, (
+        f"Interleave mapping length {len(mapping)} != target {target_layers}. "
+        f"This can happen if source_list references layers not in [0, original_layers). "
+        f"source_list sources: {sorted(set(source_list))}"
+    )
+    return mapping
 
 
 def validate_layer_layout(index: dict, original_layers: int) -> list[int]:
@@ -219,10 +216,8 @@ def main():
     orig_to_new: dict[int, list[int]] = defaultdict(list)
     new_layer_set: set[int] = set()
     for new_idx, (src, is_new) in enumerate(layer_mapping):
-        if new_idx < original_layers and not is_new:
-            continue
-        orig_to_new[src].append(new_idx)
         if is_new:
+            orig_to_new[src].append(new_idx)
             new_layer_set.add(new_idx)
 
     target_size_bytes = auto_detect_shard_size(model_dir, shard_files)

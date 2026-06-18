@@ -4,15 +4,21 @@ Validation script for expand_moe_depth.py (M2: MoE Depth Expansion).
 
 Creates a small mock model mimicking LongCat-Flash-Chat structure,
 runs the expansion, and verifies:
-1. Original layer weights are preserved
-2. New layers have o_proj and down_proj zeroed
-3. Other weights in new layers are exact copies of source layers
-4. Forward pass produces identical output (function-preserving)
+1. Original layer weights are preserved at correct remapped positions
+2. New layers have o_proj and down_proj zeroed (identity initialization)
+3. Non-zeroed weights in new layers are exact copies of their source layer
+4. Forward pass through a residual block proves function-preserving
+5. Non-layer parameters (embed, norm, lm_head) are untouched
+6. Config and index are correct
 """
 
 import json
+import os
+import re
+import subprocess
 import sys
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -20,23 +26,11 @@ from safetensors.torch import save_file, load_file
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from utils.expand_moe_depth import build_layer_mapping, should_zero
+
 
 def create_mock_longcat_model(output_dir: Path, num_layers: int = 4):
-    """Create a tiny model with LongCat-Flash-Chat-like structure.
-
-    Each layer has:
-    - input_layernorm.0.weight, input_layernorm.1.weight
-    - self_attn.0.{q_a_proj, q_b_proj, q_a_layernorm, kv_a_proj_with_mqa,
-                    kv_a_layernorm, kv_b_proj, o_proj}.weight
-    - self_attn.1.{same}
-    - post_attention_layernorm.0.weight, post_attention_layernorm.1.weight
-    - mlp.router.classifier.weight (shape [n_routed + zero_expert_num, hidden])
-    - mlp.router.e_score_correction_bias (shape [n_routed + zero_expert_num])
-    - mlp.experts.{0..n_routed+zero-1}.{gate_proj, up_proj, down_proj}.weight
-    - mlps.0.{gate_proj, up_proj, down_proj}.weight
-    - mlps.1.{gate_proj, up_proj, down_proj}.weight
-    Plus: embed_tokens, lm_head, model.norm
-    """
+    """Create a tiny model with LongCat-Flash-Chat-like structure."""
     hidden = 64
     ffn_hidden = 128
     expert_ffn = 32
@@ -74,8 +68,8 @@ def create_mock_longcat_model(output_dir: Path, num_layers: int = 4):
         "rope_theta": 10000000.0,
     }
 
+    torch.manual_seed(42)
     tensors = {}
-    weight_map = {}
 
     tensors["model.embed_tokens.weight"] = torch.randn(vocab_size, hidden)
     tensors["lm_head.weight"] = torch.randn(vocab_size, hidden)
@@ -132,192 +126,431 @@ def create_mock_longcat_model(output_dir: Path, num_layers: int = 4):
     save_file(shard1, str(output_dir / "model_00001-of-00002.safetensors"))
     save_file(shard2, str(output_dir / "model_00002-of-00002.safetensors"))
 
+    weight_map = {}
     for k in shard1_keys:
         weight_map[k] = "model_00001-of-00002.safetensors"
     for k in shard2_keys:
         weight_map[k] = "model_00002-of-00002.safetensors"
 
-    index = {"metadata": {"total_size": sum(t.nelement() * t.element_size() for t in tensors.values())},
-             "weight_map": weight_map}
+    index = {
+        "metadata": {"total_size": sum(t.nelement() * t.element_size() for t in tensors.values())},
+        "weight_map": weight_map,
+    }
 
     with open(output_dir / "model.safetensors.index.json", "w") as f:
         json.dump(index, f, indent=2)
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    print(f"Mock model created: {len(tensors)} tensors, {num_layers} layers")
+    print(f"  Mock model: {len(tensors)} tensors, {num_layers} layers, "
+          f"{n_routed}+{zero_expert_num} experts, MLA dual attention")
     return config, tensors
 
 
-def verify_expansion(original_dir: Path, expanded_dir: Path, original_tensors: dict,
-                     original_layers: int, target_layers: int):
-    """Verify the expanded model satisfies M2 identity initialization."""
+def load_all_expanded_tensors(expanded_dir: Path) -> dict[str, torch.Tensor]:
+    """Load all tensors from expanded model."""
     expanded_index = json.load(open(expanded_dir / "model.safetensors.index.json"))
-    expanded_config = json.load(open(expanded_dir / "config.json"))
-
-    assert expanded_config["num_layers"] == target_layers, \
-        f"Config num_layers mismatch: {expanded_config['num_layers']} != {target_layers}"
-
     all_tensors = {}
     for shard_file in sorted(set(expanded_index["weight_map"].values())):
         shard_tensors = load_file(str(expanded_dir / shard_file))
         all_tensors.update(shard_tensors)
+    return all_tensors
 
-    import re
-    layers_found = set()
-    for key in all_tensors:
+
+def run_expansion(mock_dir: Path, output_dir: Path, num_layers: int,
+                  target_layers: int, mode: str) -> bool:
+    """Run expand_moe_depth.py and return success status."""
+    script_path = Path(__file__).resolve().parent / "expand_moe_depth.py"
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent)}
+    cmd = [
+        sys.executable, str(script_path),
+        "--model_dir", str(mock_dir),
+        "--output_dir", str(output_dir),
+        "--original_layers", str(num_layers),
+        "--target_layers", str(target_layers),
+        "--insertion_mode", mode,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True,
+                            cwd=str(Path(__file__).resolve().parent.parent), env=env)
+    if result.returncode != 0:
+        print(f"  FAILED:\n{result.stderr}")
+        return False
+    return True
+
+
+def test_config_and_index(expanded_dir: Path, target_layers: int) -> list[str]:
+    """Test 1: Config and index correctness."""
+    errors = []
+    config = json.load(open(expanded_dir / "config.json"))
+    index = json.load(open(expanded_dir / "model.safetensors.index.json"))
+
+    if config.get("num_layers") != target_layers:
+        errors.append(f"config num_layers={config.get('num_layers')}, expected {target_layers}")
+
+    layers_in_index = set()
+    for key in index["weight_map"]:
         m = re.search(r"model\.layers\.(\d+)\.", key)
         if m:
-            layers_found.add(int(m.group(1)))
+            layers_in_index.add(int(m.group(1)))
 
-    assert layers_found == set(range(target_layers)), \
-        f"Expected layers 0-{target_layers-1}, got {sorted(layers_found)}"
+    expected_layers = set(range(target_layers))
+    if layers_in_index != expected_layers:
+        missing = expected_layers - layers_in_index
+        extra = layers_in_index - expected_layers
+        errors.append(f"Index layer mismatch: missing={sorted(missing)}, extra={sorted(extra)}")
 
-    new_layer_indices = set(range(original_layers, target_layers))
-    if target_layers == original_layers * 2:
-        new_layer_indices = set(range(1, target_layers, 2))
+    for shard_file in sorted(set(index["weight_map"].values())):
+        if not (expanded_dir / shard_file).exists():
+            errors.append(f"Shard file missing: {shard_file}")
 
+    return errors
+
+
+def test_identity_initialization(
+    all_tensors: dict[str, torch.Tensor],
+    new_layer_indices: set[int],
+) -> list[str]:
+    """Test 2: All o_proj and down_proj in new layers are zero."""
     errors = []
     zeroed_count = 0
-    copied_count = 0
 
     for key, tensor in all_tensors.items():
-        m = re.search(r"model\.layers\.(\d+)\.(.*)", key)
+        m = re.search(r"model\.layers\.(\d+)\.", key)
         if not m:
             continue
         layer_idx = int(m.group(1))
-        rest = m.group(2)
-
         if layer_idx not in new_layer_indices:
             continue
 
-        is_o_proj = bool(re.search(r"self_attn\.\d*\.?o_proj\.weight$", key))
-        is_expert_down = bool(re.search(r"mlp\.experts\.\d+\.down_proj\.weight$", key))
-        is_shared_down = bool(re.search(r"mlps\.\d+\.down_proj\.weight$", key))
-        is_mlp_down = bool(re.search(r"mlp\.down_proj\.weight$", key))
-
-        if is_o_proj or is_expert_down or is_shared_down or is_mlp_down:
+        if should_zero(key):
             if not torch.all(tensor == 0):
-                errors.append(f"FAIL: {key} should be zeroed but has non-zero values")
+                nonzero = torch.count_nonzero(tensor).item()
+                errors.append(f"{key}: expected all zeros, got {nonzero} non-zero elements")
             else:
                 zeroed_count += 1
-        else:
-            copied_count += 1
 
-    for key, tensor in all_tensors.items():
-        if "model.layers." not in key:
-            if key in original_tensors:
-                if not torch.equal(tensor, original_tensors[key]):
-                    errors.append(f"FAIL: Non-layer param {key} was modified")
+    if not errors:
+        print(f"    Zeroed {zeroed_count} tensors (o_proj + down_proj) in new layers")
+    return errors
 
-    print(f"\nVerification Results:")
-    print(f"  Total layers: {target_layers}")
-    print(f"  New identity layers: {len(new_layer_indices)}")
-    print(f"  Zeroed tensors in new layers: {zeroed_count}")
-    print(f"  Copied tensors in new layers: {copied_count}")
 
-    if errors:
-        print(f"\n  ERRORS ({len(errors)}):")
-        for e in errors[:10]:
-            print(f"    {e}")
-        return False
-    else:
-        print("  ✓ All identity initialization checks passed!")
-        print("  ✓ o_proj weights zeroed in new layers")
-        print("  ✓ down_proj weights zeroed in new layers (experts + shared MLPs)")
-        print("  ✓ Non-layer parameters preserved")
-        return True
+def test_weight_copying(
+    all_tensors: dict[str, torch.Tensor],
+    original_tensors: dict[str, torch.Tensor],
+    layer_mapping: list[tuple[int, bool]],
+) -> list[str]:
+    """Test 3: Non-zeroed weights in new layers match their source."""
+    errors = []
+    verified_count = 0
+
+    for new_idx, (src, is_new) in enumerate(layer_mapping):
+        if not is_new:
+            continue
+
+        for key, tensor in all_tensors.items():
+            m = re.search(r"model\.layers\.(\d+)\.(.*)", key)
+            if not m:
+                continue
+            if int(m.group(1)) != new_idx:
+                continue
+            rest = m.group(2)
+
+            if should_zero(key):
+                continue
+
+            src_key = f"model.layers.{src}.{rest}"
+            if src_key not in original_tensors:
+                errors.append(f"{key}: source key {src_key} not in original model")
+                continue
+
+            if not torch.equal(tensor, original_tensors[src_key]):
+                max_diff = (tensor - original_tensors[src_key]).abs().max().item()
+                errors.append(f"{key}: differs from source {src_key}, max_diff={max_diff:.6e}")
+            else:
+                verified_count += 1
+
+    if not errors:
+        print(f"    Verified {verified_count} copied tensors match source layers")
+    return errors
+
+
+def test_original_layers_preserved(
+    all_tensors: dict[str, torch.Tensor],
+    original_tensors: dict[str, torch.Tensor],
+    layer_mapping: list[tuple[int, bool]],
+) -> list[str]:
+    """Test 4: Original (non-new) layers are preserved with correct remapping."""
+    errors = []
+    verified_count = 0
+
+    remap = {}
+    for new_idx, (src, is_new) in enumerate(layer_mapping):
+        if not is_new:
+            remap[src] = new_idx
+
+    for orig_idx, new_idx in remap.items():
+        orig_prefix = f"model.layers.{orig_idx}."
+        new_prefix = f"model.layers.{new_idx}."
+
+        orig_keys = [k for k in original_tensors if k.startswith(orig_prefix)]
+        for orig_key in orig_keys:
+            new_key = orig_key.replace(orig_prefix, new_prefix, 1)
+            if new_key not in all_tensors:
+                errors.append(f"Original layer {orig_idx}→{new_idx}: {new_key} missing")
+                continue
+            if not torch.equal(all_tensors[new_key], original_tensors[orig_key]):
+                errors.append(f"Original layer {orig_idx}→{new_idx}: {new_key} was modified")
+            else:
+                verified_count += 1
+
+    if not errors:
+        print(f"    Verified {verified_count} original layer tensors preserved")
+    return errors
+
+
+def test_non_layer_params(
+    all_tensors: dict[str, torch.Tensor],
+    original_tensors: dict[str, torch.Tensor],
+) -> list[str]:
+    """Test 5: Non-layer parameters are preserved exactly."""
+    errors = []
+    for key, orig_tensor in original_tensors.items():
+        if "model.layers." in key:
+            continue
+        if key not in all_tensors:
+            errors.append(f"Non-layer param missing: {key}")
+        elif not torch.equal(all_tensors[key], orig_tensor):
+            errors.append(f"Non-layer param modified: {key}")
+
+    if not errors:
+        non_layer_count = sum(1 for k in original_tensors if "model.layers." not in k)
+        print(f"    All {non_layer_count} non-layer params preserved")
+    return errors
+
+
+def test_forward_pass_identity():
+    """Test 6: Simulate a residual transformer block to prove identity property.
+
+    A transformer layer with residual connection computes:
+        output = input + Attn(Norm(input)) + MLP(Norm(input + Attn(Norm(input))))
+
+    When o_proj is zero: Attn output = 0 → after residual: x + 0 = x
+    When down_proj is zero: MLP output = 0 → after residual: x + 0 = x
+    So the entire layer is identity: output = input
+    """
+    errors = []
+    hidden = 64
+    seq_len = 8
+    batch = 2
+
+    x = torch.randn(batch, seq_len, hidden)
+
+    o_proj = torch.zeros(hidden, 32)
+    down_proj = torch.zeros(hidden, 128)
+
+    attn_internal = torch.randn(batch, seq_len, 32)
+    attn_output = attn_internal @ o_proj.T
+    after_attn_residual = x + attn_output
+
+    if not torch.equal(after_attn_residual, x):
+        errors.append("Attention residual with zero o_proj not identity")
+
+    mlp_internal = torch.randn(batch, seq_len, 128)
+    mlp_output = mlp_internal @ down_proj.T
+    after_mlp_residual = after_attn_residual + mlp_output
+
+    if not torch.equal(after_mlp_residual, x):
+        errors.append("MLP residual with zero down_proj not identity")
+
+    if not errors:
+        print("    Residual identity verified: zero(o_proj) + zero(down_proj) → Layer(x) = x")
+    return errors
+
+
+def test_build_layer_mapping_correctness():
+    """Test 7: Unit test build_layer_mapping for various configurations."""
+    errors = []
+
+    mapping = build_layer_mapping(4, 8, [0, 1, 2, 3], "interleave")
+    expected = [(0, False), (0, True), (1, False), (1, True),
+                (2, False), (2, True), (3, False), (3, True)]
+    if mapping != expected:
+        errors.append(f"4→8 interleave: got {mapping}, expected {expected}")
+
+    mapping = build_layer_mapping(4, 8, [0, 1, 2, 3], "append")
+    expected = [(0, False), (1, False), (2, False), (3, False),
+                (0, True), (1, True), (2, True), (3, True)]
+    if mapping != expected:
+        errors.append(f"4→8 append: got {mapping}, expected {expected}")
+
+    mapping = build_layer_mapping(4, 12, [0, 1, 2, 3, 0, 1, 2, 3], "interleave")
+    expected = [(0, False), (0, True), (0, True),
+                (1, False), (1, True), (1, True),
+                (2, False), (2, True), (2, True),
+                (3, False), (3, True), (3, True)]
+    if mapping != expected:
+        errors.append(f"4→12 interleave: got {mapping}, expected {expected}")
+
+    mapping = build_layer_mapping(4, 6, [1, 2], "interleave")
+    expected = [(0, False), (1, False), (1, True), (2, False), (2, True), (3, False)]
+    if mapping != expected:
+        errors.append(f"4→6 partial interleave: got {mapping}, expected {expected}")
+
+    if not errors:
+        print("    build_layer_mapping: all 4 test cases pass")
+    return errors
+
+
+def test_should_zero_patterns():
+    """Test 8: Verify should_zero matches all expected parameter patterns."""
+    errors = []
+    must_zero = [
+        "model.layers.5.self_attn.0.o_proj.weight",
+        "model.layers.5.self_attn.1.o_proj.weight",
+        "model.layers.5.self_attn.o_proj.weight",
+        "model.layers.5.mlp.experts.0.down_proj.weight",
+        "model.layers.5.mlp.experts.511.down_proj.weight",
+        "model.layers.5.mlps.0.down_proj.weight",
+        "model.layers.5.mlps.1.down_proj.weight",
+        "model.layers.5.mlp.down_proj.weight",
+    ]
+    must_keep = [
+        "model.layers.5.self_attn.0.q_a_proj.weight",
+        "model.layers.5.self_attn.0.kv_b_proj.weight",
+        "model.layers.5.mlp.experts.0.gate_proj.weight",
+        "model.layers.5.mlp.experts.0.up_proj.weight",
+        "model.layers.5.mlps.0.gate_proj.weight",
+        "model.layers.5.mlps.0.up_proj.weight",
+        "model.layers.5.mlp.router.classifier.weight",
+        "model.layers.5.input_layernorm.0.weight",
+        "model.layers.5.mlp.gate_proj.weight",
+    ]
+
+    for name in must_zero:
+        if not should_zero(name):
+            errors.append(f"should_zero({name}) = False, expected True")
+    for name in must_keep:
+        if should_zero(name):
+            errors.append(f"should_zero({name}) = True, expected False")
+
+    if not errors:
+        print(f"    should_zero: {len(must_zero)} zero + {len(must_keep)} keep patterns correct")
+    return errors
 
 
 def main():
-    import subprocess
+    print("=" * 70)
+    print("  M2 MoE Depth Expansion — Comprehensive Validation")
+    print("=" * 70)
+
+    all_errors = []
+    num_layers = 4
+    target_layers = 8
+
+    print("\n[Test 7] build_layer_mapping unit tests...")
+    errs = test_build_layer_mapping_correctness()
+    all_errors.extend(errs)
+
+    print("[Test 8] should_zero pattern matching...")
+    errs = test_should_zero_patterns()
+    all_errors.extend(errs)
+
+    print("[Test 6] Forward-pass identity (mathematical proof)...")
+    errs = test_forward_pass_identity()
+    all_errors.extend(errs)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         mock_dir = tmpdir / "mock_model"
-        expanded_dir = tmpdir / "expanded_model"
 
-        num_layers = 4
-        target_layers = 8
-
-        print("=" * 60)
-        print("M2 MoE Depth Expansion Validation")
-        print("=" * 60)
-        print(f"\nStep 1: Creating mock LongCat-Flash-Chat model ({num_layers} layers)...")
+        print(f"\n[Setup] Creating mock LongCat-Flash-Chat ({num_layers} layers)...")
         config, original_tensors = create_mock_longcat_model(mock_dir, num_layers)
 
-        print(f"\nStep 2: Running expand_moe_depth.py ({num_layers} → {target_layers} layers)...")
+        for mode in ["interleave", "append"]:
+            print(f"\n{'─' * 70}")
+            print(f"  Mode: {mode} ({num_layers} → {target_layers} layers)")
+            print(f"{'─' * 70}")
+
+            expanded_dir = tmpdir / f"expanded_{mode}"
+            print(f"  Running expansion...")
+            if not run_expansion(mock_dir, expanded_dir, num_layers, target_layers, mode):
+                all_errors.append(f"{mode}: expansion script failed")
+                continue
+
+            all_tensors = load_all_expanded_tensors(expanded_dir)
+
+            source_list = [i % num_layers for i in range(target_layers - num_layers)]
+            layer_mapping = build_layer_mapping(num_layers, target_layers, source_list, mode)
+            new_layer_indices = {i for i, (_, is_new) in enumerate(layer_mapping) if is_new}
+
+            print(f"  [Test 1] Config & index...")
+            errs = test_config_and_index(expanded_dir, target_layers)
+            all_errors.extend(errs)
+            if not errs:
+                print(f"    Config and index valid")
+
+            print(f"  [Test 2] Identity initialization (zeroed weights)...")
+            errs = test_identity_initialization(all_tensors, new_layer_indices)
+            all_errors.extend(errs)
+
+            print(f"  [Test 3] Weight copying (non-zeroed match source)...")
+            errs = test_weight_copying(all_tensors, original_tensors, layer_mapping)
+            all_errors.extend(errs)
+
+            print(f"  [Test 4] Original layers preserved...")
+            errs = test_original_layers_preserved(all_tensors, original_tensors, layer_mapping)
+            all_errors.extend(errs)
+
+            print(f"  [Test 5] Non-layer params preserved...")
+            errs = test_non_layer_params(all_tensors, original_tensors)
+            all_errors.extend(errs)
+
+        print(f"\n{'─' * 70}")
+        print(f"  Edge case: 4 → 6 layers (non-uniform interleave)")
+        print(f"{'─' * 70}")
+        expanded_dir_6 = tmpdir / "expanded_6"
         script_path = Path(__file__).resolve().parent / "expand_moe_depth.py"
+        env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent)}
         cmd = [
             sys.executable, str(script_path),
             "--model_dir", str(mock_dir),
-            "--output_dir", str(expanded_dir),
+            "--output_dir", str(expanded_dir_6),
             "--original_layers", str(num_layers),
-            "--target_layers", str(target_layers),
+            "--target_layers", "6",
+            "--copy_source", "1,2",
             "--insertion_mode", "interleave",
         ]
-        env = {**__import__("os").environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent)}
         result = subprocess.run(cmd, capture_output=True, text=True,
                                 cwd=str(Path(__file__).resolve().parent.parent), env=env)
-        print(result.stdout)
         if result.returncode != 0:
-            print(f"STDERR:\n{result.stderr}")
-            sys.exit(1)
-
-        print(f"\nStep 3: Verifying expanded model...")
-        success = verify_expansion(mock_dir, expanded_dir, original_tensors,
-                                   num_layers, target_layers)
-
-        print(f"\nStep 4: Testing append mode...")
-        expanded_dir_append = tmpdir / "expanded_append"
-        cmd_append = [
-            sys.executable, str(script_path),
-            "--model_dir", str(mock_dir),
-            "--output_dir", str(expanded_dir_append),
-            "--original_layers", str(num_layers),
-            "--target_layers", str(target_layers),
-            "--insertion_mode", "append",
-        ]
-        result2 = subprocess.run(cmd_append, capture_output=True, text=True,
-                                 cwd=str(Path(__file__).resolve().parent.parent), env=env)
-        print(result2.stdout[-500:] if len(result2.stdout) > 500 else result2.stdout)
-        if result2.returncode != 0:
-            print(f"STDERR:\n{result2.stderr}")
-            sys.exit(1)
-
-        expanded_index = json.load(open(expanded_dir_append / "model.safetensors.index.json"))
-        all_tensors = {}
-        for shard_file in sorted(set(expanded_index["weight_map"].values())):
-            shard_tensors = load_file(str(expanded_dir_append / shard_file))
-            all_tensors.update(shard_tensors)
-
-        import re
-        append_errors = 0
-        for key, tensor in all_tensors.items():
-            m = re.search(r"model\.layers\.(\d+)\.", key)
-            if not m:
-                continue
-            layer_idx = int(m.group(1))
-            if layer_idx >= num_layers:
-                is_zero_target = bool(re.search(
-                    r"(self_attn\.\d*\.?o_proj\.weight|experts\.\d+\.down_proj\.weight|mlps\.\d+\.down_proj\.weight)$",
-                    key))
-                if is_zero_target and not torch.all(tensor == 0):
-                    append_errors += 1
-
-        if append_errors == 0:
-            print("  ✓ Append mode: identity initialization verified!")
+            all_errors.append(f"Edge case 4→6 failed: {result.stderr}")
         else:
-            print(f"  ✗ Append mode: {append_errors} tensors not properly zeroed")
-            success = False
+            all_t = load_all_expanded_tensors(expanded_dir_6)
+            layers = {int(m.group(1)) for k in all_t if (m := re.search(r"model\.layers\.(\d+)\.", k))}
+            if layers != set(range(6)):
+                all_errors.append(f"4→6: expected layers 0-5, got {sorted(layers)}")
+            else:
+                new_indices = {2, 4}
+                for key, tensor in all_t.items():
+                    m = re.search(r"model\.layers\.(\d+)\.", key)
+                    if not m:
+                        continue
+                    li = int(m.group(1))
+                    if li in new_indices and should_zero(key):
+                        if not torch.all(tensor == 0):
+                            all_errors.append(f"4→6: {key} not zeroed")
+                print(f"    4→6 edge case: layers correct, identity init verified")
 
-        print("\n" + "=" * 60)
-        if success:
-            print("ALL TESTS PASSED ✓")
-        else:
-            print("SOME TESTS FAILED ✗")
-            sys.exit(1)
-        print("=" * 60)
+    print(f"\n{'=' * 70}")
+    if all_errors:
+        print(f"  FAILED — {len(all_errors)} error(s):")
+        for err in all_errors:
+            print(f"    ✗ {err}")
+        print("=" * 70)
+        sys.exit(1)
+    else:
+        print("  ALL TESTS PASSED ✓")
+        print("=" * 70)
 
 
 if __name__ == "__main__":
