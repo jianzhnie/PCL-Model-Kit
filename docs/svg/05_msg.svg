@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 170" font-family="system-ui,-apple-system,sans-serif">
+<defs>
+  <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
+  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
+  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444"/></marker>
+  <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
+  <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/></filter>
+</defs>
+
+  <text x="390" y="24" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">MSG — Masked Structural Growth (4 Dimensions)</text>
+  <line x1="165" y1="36" x2="615" y2="36" stroke="#CBD5E1"/>
+  <rect x="290" y="46" width="160" height="38" rx="8" fill="#1E293B" filter="url(#sh)"/><text x="370" y="70" text-anchor="middle" font-size="12" fill="#fff" font-weight="700">Original Block</text>
+  <line x1="370" y1="84" x2="370" y2="94" stroke="#94A3B8" stroke-width="1.5"/>
+  <line x1="100" y1="94" x2="640" y2="94" stroke="#94A3B8" stroke-width="1.5"/>
+  <line x1="100" y1="94" x2="100" y2="108" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <line x1="280" y1="94" x2="280" y2="108" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <line x1="460" y1="94" x2="460" y2="108" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <line x1="640" y1="94" x2="640" y2="108" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <rect x="40" y="112" width="120" height="44" rx="8" fill="#3B82F6" filter="url(#sh)"/><text x="100" y="132" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">+ Depth</text><text x="100" y="148" text-anchor="middle" font-size="9" fill="#BFDBFE">Identity Block</text>
+  <rect x="220" y="112" width="120" height="44" rx="8" fill="#EF4444" filter="url(#sh)"/><text x="280" y="132" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">+ Width</text><text x="280" y="148" text-anchor="middle" font-size="9" fill="#FECACA">Zero-Pad</text>
+  <rect x="400" y="112" width="120" height="44" rx="8" fill="#10B981" filter="url(#sh)"/><text x="460" y="132" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">+ Heads</text><text x="460" y="148" text-anchor="middle" font-size="9" fill="#D1FAE5">o_proj = 0</text>
+  <rect x="580" y="112" width="120" height="44" rx="8" fill="#8B5CF6" filter="url(#sh)"/><text x="640" y="132" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">+ FFN</text><text x="640" y="148" text-anchor="middle" font-size="9" fill="#DDD6FE">Zero-Pad</text>
+
+</svg>

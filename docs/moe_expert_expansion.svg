@@ -1,0 +1,253 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 860" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6Z" fill="#64748B"/>
+    </marker>
+    <marker id="arr-w" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6Z" fill="#fff"/>
+    </marker>
+    <marker id="arr-or" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6Z" fill="#EA580C"/>
+    </marker>
+    <linearGradient id="g-exp" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/>
+    </linearGradient>
+    <pattern id="noise" width="6" height="6" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.7" fill="#EF4444" opacity="0.5"/>
+      <circle cx="4" cy="4" r="0.7" fill="#EF4444" opacity="0.5"/>
+    </pattern>
+  </defs>
+
+  <!-- ==================== Title ==================== -->
+  <text x="470" y="36" text-anchor="middle" font-size="20" font-weight="700" fill="#0F172A">MoE 专家数扩展 (M1) — Expert Upcycling 原理</text>
+  <line x1="140" y1="50" x2="800" y2="50" stroke="#CBD5E1"/>
+
+  <!-- ==================== Section 1: Original MoE ==================== -->
+  <text x="470" y="80" text-anchor="middle" font-size="14" font-weight="600" fill="#334155">原始 MoE 层 — 512 Routed Experts, Top-12</text>
+
+  <!-- Token input -->
+  <rect x="50" y="100" width="110" height="34" rx="6" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5"/>
+  <text x="105" y="122" text-anchor="middle" font-size="12" font-weight="600" fill="#1E40AF">Hidden State h</text>
+  <line x1="160" y1="117" x2="198" y2="117" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Router -->
+  <rect x="200" y="96" width="120" height="42" rx="6" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+  <text x="260" y="114" text-anchor="middle" font-size="12" font-weight="600" fill="#5B21B6">Router</text>
+  <text x="260" y="130" text-anchor="middle" font-size="10" fill="#7C3AED">[512 × 6144]</text>
+
+  <!-- Arrow from router to expert pool -->
+  <line x1="320" y1="117" x2="358" y2="117" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="340" y="108" text-anchor="middle" font-size="10" fill="#7C3AED" font-weight="600">Top-12</text>
+
+  <!-- Expert pool - original -->
+  <rect x="360" y="92" width="400" height="50" rx="8" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+
+  <!-- 512 experts as blocks -->
+  <g transform="translate(370,100)">
+    <!-- Active (selected) experts - blue highlighted -->
+    <rect x="0"   y="0" width="22" height="32" rx="3" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="11" y="21" text-anchor="middle" font-size="8" fill="white" font-weight="600">E0</text>
+    <rect x="26"  y="0" width="22" height="32" rx="3" fill="#DBEAFE" stroke="#93C5FD" stroke-width="0.8"/><text x="37" y="21" text-anchor="middle" font-size="8" fill="#6B7280">E1</text>
+    <rect x="52"  y="0" width="22" height="32" rx="3" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="63" y="21" text-anchor="middle" font-size="8" fill="white" font-weight="600">E2</text>
+    <rect x="78"  y="0" width="22" height="32" rx="3" fill="#DBEAFE" stroke="#93C5FD" stroke-width="0.8"/><text x="89" y="21" text-anchor="middle" font-size="8" fill="#6B7280">E3</text>
+    <rect x="104" y="0" width="22" height="32" rx="3" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="115" y="21" text-anchor="middle" font-size="8" fill="white" font-weight="600">E4</text>
+    <text x="140" y="20" font-size="12" fill="#94A3B8">···</text>
+    <rect x="158" y="0" width="22" height="32" rx="3" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="169" y="21" text-anchor="middle" font-size="7" fill="white" font-weight="600">E99</text>
+    <text x="194" y="20" font-size="12" fill="#94A3B8">···</text>
+    <rect x="212" y="0" width="22" height="32" rx="3" fill="#DBEAFE" stroke="#93C5FD" stroke-width="0.8"/><text x="223" y="21" text-anchor="middle" font-size="6.5" fill="#6B7280">E510</text>
+    <rect x="238" y="0" width="22" height="32" rx="3" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="249" y="21" text-anchor="middle" font-size="6.5" fill="white" font-weight="600">E511</text>
+  </g>
+  <!-- Expert pool labels -->
+  <text x="560" y="88" text-anchor="middle" font-size="10" fill="#94A3B8">512 个路由专家（蓝色深色 = 被 Top-12 选中）</text>
+
+  <!-- Weighted sum -->
+  <line x1="760" y1="117" x2="798" y2="117" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <circle cx="820" cy="117" r="16" fill="#D1FAE5" stroke="#10B981" stroke-width="1.5"/>
+  <text x="820" y="122" text-anchor="middle" font-size="14" font-weight="700" fill="#059669">Σ</text>
+  <line x1="836" y1="117" x2="872" y2="117" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="902" y="122" text-anchor="middle" font-size="12" font-weight="600" fill="#059669">out</text>
+
+  <!-- ==================== Section 2: Expansion Process ==================== -->
+  <line x1="60" y1="165" x2="880" y2="165" stroke="#CBD5E1" stroke-dasharray="6,4"/>
+
+  <!-- Big down arrow -->
+  <rect x="395" y="178" width="150" height="36" rx="18" fill="#EA580C"/>
+  <text x="470" y="201" text-anchor="middle" font-size="13" font-weight="700" fill="white">2× Expert Upcycling</text>
+
+  <!-- Three expansion columns -->
+  <text x="470" y="240" text-anchor="middle" font-size="14" font-weight="600" fill="#334155">扩展过程 — 三个维度同步</text>
+
+  <!-- Column 1: Expert duplication -->
+  <rect x="40" y="258" width="260" height="210" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="170" y="280" text-anchor="middle" font-size="12" font-weight="700" fill="#1E40AF">① 专家权重复制</text>
+
+  <!-- Original expert -->
+  <rect x="65" y="296" width="90" height="52" rx="5" fill="#3B82F6"/>
+  <text x="110" y="317" text-anchor="middle" font-size="11" fill="white" font-weight="600">Expert 0</text>
+  <text x="110" y="335" text-anchor="middle" font-size="9" fill="#BFDBFE">gate / up / down</text>
+
+  <!-- Arrow to copies -->
+  <line x1="155" y1="322" x2="177" y2="305" stroke="#64748B" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="155" y1="322" x2="177" y2="340" stroke="#EA580C" stroke-width="1.2" marker-end="url(#arr-or)"/>
+
+  <!-- Keep original -->
+  <rect x="180" y="290" width="100" height="28" rx="4" fill="#3B82F6"/>
+  <text x="230" y="309" text-anchor="middle" font-size="10" fill="white" font-weight="500">E0 (保留)</text>
+
+  <!-- Copy -->
+  <rect x="180" y="328" width="100" height="28" rx="4" fill="url(#g-exp)" stroke="#F97316" stroke-width="1.5"/>
+  <text x="230" y="347" text-anchor="middle" font-size="10" fill="#C2410C" font-weight="600">E0' (副本)</text>
+
+  <!-- Noise indicator on copy -->
+  <rect x="180" y="364" width="100" height="22" rx="4" fill="#FEE2E2" stroke="#EF4444" stroke-width="1"/>
+  <text x="230" y="380" text-anchor="middle" font-size="9" fill="#DC2626" font-weight="600">+ ε (可选噪声)</text>
+
+  <!-- Note: same for all 512 -->
+  <text x="170" y="408" text-anchor="middle" font-size="10" fill="#64748B">每个专家各复制 1 份</text>
+  <text x="170" y="424" text-anchor="middle" font-size="10" fill="#64748B">512 → 1024 routed experts</text>
+  <text x="170" y="442" text-anchor="middle" font-size="10" font-weight="600" fill="#059669">参数量翻倍</text>
+
+  <!-- Column 2: Router expansion -->
+  <rect x="320" y="258" width="280" height="210" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="460" y="280" text-anchor="middle" font-size="12" font-weight="700" fill="#5B21B6">② Router 权重扩展</text>
+
+  <!-- Original router matrix -->
+  <rect x="345" y="296" width="80" height="80" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.2"/>
+  <text x="385" y="330" text-anchor="middle" font-size="10" fill="#5B21B6" font-weight="500">W</text>
+  <text x="385" y="346" text-anchor="middle" font-size="9" fill="#7C3AED">[512, d]</text>
+  <text x="385" y="390" text-anchor="middle" font-size="10" fill="#64748B">原始</text>
+
+  <!-- Arrow -->
+  <line x1="430" y1="336" x2="460" y2="336" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Expanded router matrix -->
+  <g>
+    <!-- Top half: original rows -->
+    <rect x="465" y="296" width="80" height="40" rx="4" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.2"/>
+    <text x="505" y="320" text-anchor="middle" font-size="9" fill="#5B21B6" font-weight="500">W (原始行)</text>
+    <!-- Bottom half: copied rows with noise pattern -->
+    <rect x="465" y="336" width="80" height="40" rx="4" fill="url(#noise)" stroke="#EF4444" stroke-width="1.2"/>
+    <rect x="465" y="336" width="80" height="40" rx="4" fill="#EDE9FE" stroke="#EF4444" stroke-width="1.2" opacity="0.7"/>
+    <text x="505" y="360" text-anchor="middle" font-size="9" fill="#DC2626" font-weight="500">W + ε (复制行)</text>
+  </g>
+  <text x="505" y="390" text-anchor="middle" font-size="10" fill="#64748B">扩展后</text>
+  <text x="555" y="336" font-size="9" fill="#64748B">[1024, d]</text>
+
+  <text x="460" y="420" text-anchor="middle" font-size="10" fill="#64748B">Router 输出维度: 512 → 1024</text>
+  <text x="460" y="436" text-anchor="middle" font-size="10" fill="#64748B">新行 = 源行 + 高斯噪声</text>
+  <text x="460" y="452" text-anchor="middle" font-size="10" font-weight="600" fill="#DC2626">打破对称性 → 副本可分化</text>
+
+  <!-- Column 3: Key insight -->
+  <rect x="620" y="258" width="270" height="210" rx="10" fill="#F0FDF4" stroke="#BBF7D0"/>
+  <text x="755" y="280" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">③ 核心优势</text>
+
+  <text x="755" y="314" text-anchor="middle" font-size="13" font-weight="600" fill="#0F172A">Top-K 路由不变</text>
+  <text x="755" y="338" text-anchor="middle" font-size="11" fill="#475569">扩展前: Top-12 / 512</text>
+  <text x="755" y="358" text-anchor="middle" font-size="11" fill="#475569">扩展后: Top-12 / 1024</text>
+
+  <line x1="680" y1="372" x2="830" y2="372" stroke="#D1FAE5" stroke-width="1"/>
+
+  <text x="755" y="396" text-anchor="middle" font-size="13" font-weight="700" fill="#059669">推理激活参数不变</text>
+  <text x="755" y="416" text-anchor="middle" font-size="11" fill="#475569">每 token 仍只激活 12 个专家</text>
+  <text x="755" y="436" text-anchor="middle" font-size="11" fill="#475569">FLOPs ≈ 不变</text>
+  <text x="755" y="456" text-anchor="middle" font-size="11" fill="#475569">总参数翻倍 (存储增加)</text>
+
+  <!-- ==================== Section 3: Expanded MoE ==================== -->
+  <line x1="60" y1="485" x2="880" y2="485" stroke="#CBD5E1" stroke-dasharray="6,4"/>
+  <text x="470" y="515" text-anchor="middle" font-size="14" font-weight="600" fill="#334155">扩展后 MoE 层 — 1024 Routed Experts, Top-12 (不变)</text>
+
+  <!-- Token input -->
+  <rect x="50" y="535" width="110" height="34" rx="6" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5"/>
+  <text x="105" y="557" text-anchor="middle" font-size="12" font-weight="600" fill="#1E40AF">Hidden State h</text>
+  <line x1="160" y1="552" x2="198" y2="552" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Router expanded -->
+  <rect x="200" y="531" width="120" height="42" rx="6" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1.5"/>
+  <text x="260" y="549" text-anchor="middle" font-size="12" font-weight="600" fill="#5B21B6">Router'</text>
+  <text x="260" y="565" text-anchor="middle" font-size="10" fill="#7C3AED">[1024 × 6144]</text>
+
+  <line x1="320" y1="552" x2="358" y2="552" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="340" y="543" text-anchor="middle" font-size="10" fill="#7C3AED" font-weight="600">Top-12</text>
+
+  <!-- Expanded expert pool -->
+  <rect x="360" y="527" width="400" height="50" rx="8" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+
+  <g transform="translate(366,535)">
+    <!-- Pairs: original + copy, some selected -->
+    <rect x="0"   y="0" width="18" height="32" rx="2" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="9" y="21" text-anchor="middle" font-size="6.5" fill="white" font-weight="600">E0</text>
+    <rect x="20"  y="0" width="18" height="32" rx="2" fill="url(#g-exp)" stroke="#F97316" stroke-width="1"/><text x="29" y="21" text-anchor="middle" font-size="6" fill="#C2410C" font-weight="600">E0'</text>
+    <rect x="42"  y="0" width="18" height="32" rx="2" fill="#DBEAFE" stroke="#93C5FD" stroke-width="0.6"/><text x="51" y="21" text-anchor="middle" font-size="6.5" fill="#6B7280">E1</text>
+    <rect x="62"  y="0" width="18" height="32" rx="2" fill="url(#g-exp)" stroke="#FDBA74" stroke-width="0.6"/><text x="71" y="21" text-anchor="middle" font-size="6" fill="#9A3412">E1'</text>
+    <rect x="84"  y="0" width="18" height="32" rx="2" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="93" y="21" text-anchor="middle" font-size="6.5" fill="white" font-weight="600">E2</text>
+    <rect x="104" y="0" width="18" height="32" rx="2" fill="#F97316" stroke="#EA580C" stroke-width="1"/><text x="113" y="21" text-anchor="middle" font-size="6" fill="white" font-weight="600">E2'</text>
+    <rect x="126" y="0" width="18" height="32" rx="2" fill="#DBEAFE" stroke="#93C5FD" stroke-width="0.6"/><text x="135" y="21" text-anchor="middle" font-size="6.5" fill="#6B7280">E3</text>
+    <rect x="146" y="0" width="18" height="32" rx="2" fill="url(#g-exp)" stroke="#FDBA74" stroke-width="0.6"/><text x="155" y="21" text-anchor="middle" font-size="6" fill="#9A3412">E3'</text>
+    <text x="174" y="20" font-size="11" fill="#94A3B8">···</text>
+    <rect x="192" y="0" width="18" height="32" rx="2" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="201" y="21" text-anchor="middle" font-size="5" fill="white" font-weight="600">E510</text>
+    <rect x="212" y="0" width="18" height="32" rx="2" fill="url(#g-exp)" stroke="#FDBA74" stroke-width="0.6"/><text x="221" y="21" text-anchor="middle" font-size="5" fill="#9A3412">E510'</text>
+    <rect x="234" y="0" width="18" height="32" rx="2" fill="#3B82F6" stroke="#1D4ED8" stroke-width="1"/><text x="243" y="21" text-anchor="middle" font-size="5" fill="white" font-weight="600">E511</text>
+    <rect x="254" y="0" width="18" height="32" rx="2" fill="url(#g-exp)" stroke="#FDBA74" stroke-width="0.6"/><text x="263" y="21" text-anchor="middle" font-size="5" fill="#9A3412">E511'</text>
+    <!-- Zero expert block -->
+    <rect x="280" y="0" width="100" height="32" rx="2" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="0.8"/>
+    <text x="330" y="14" text-anchor="middle" font-size="8" fill="#94A3B8">Zero Experts</text>
+    <text x="330" y="26" text-anchor="middle" font-size="7" fill="#94A3B8">×512 (精确复制)</text>
+  </g>
+  <text x="560" y="523" text-anchor="middle" font-size="10" fill="#94A3B8">1024 路由专家 + 512 Zero Experts = 1536 total（深色 = Top-12 选中）</text>
+
+  <!-- Weighted sum -->
+  <line x1="760" y1="552" x2="798" y2="552" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <circle cx="820" cy="552" r="16" fill="#D1FAE5" stroke="#10B981" stroke-width="1.5"/>
+  <text x="820" y="557" text-anchor="middle" font-size="14" font-weight="700" fill="#059669">Σ</text>
+  <line x1="836" y1="552" x2="872" y2="552" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="902" y="557" text-anchor="middle" font-size="12" font-weight="600" fill="#059669">out</text>
+
+  <!-- ==================== Section 4: Zero Expert Layout ==================== -->
+  <line x1="60" y1="600" x2="880" y2="600" stroke="#CBD5E1" stroke-dasharray="6,4"/>
+  <text x="470" y="630" text-anchor="middle" font-size="14" font-weight="600" fill="#334155">扩展后索引布局 — Router 维度 [1536]</text>
+
+  <!-- Index bar -->
+  <g transform="translate(60,648)">
+    <!-- Routed original [0-511] -->
+    <rect x="0" y="0" width="200" height="36" rx="4" fill="#3B82F6"/>
+    <text x="100" y="23" text-anchor="middle" font-size="11" fill="white" font-weight="600">原始 Routed [0 – 511]</text>
+    <!-- Routed copies [512-1023] -->
+    <rect x="200" y="0" width="200" height="36" rx="4" fill="#F97316"/>
+    <text x="300" y="23" text-anchor="middle" font-size="11" fill="white" font-weight="600">复制 Routed [512 – 1023]</text>
+    <!-- Zero original [1024-1279] -->
+    <rect x="400" y="0" width="200" height="36" rx="4" fill="#CBD5E1"/>
+    <text x="500" y="23" text-anchor="middle" font-size="11" fill="#475569" font-weight="600">原始 Zero [1024 – 1279]</text>
+    <!-- Zero copies [1280-1535] -->
+    <rect x="600" y="0" width="200" height="36" rx="4" fill="#E2E8F0"/>
+    <text x="700" y="23" text-anchor="middle" font-size="11" fill="#64748B" font-weight="600">复制 Zero [1280 – 1535]</text>
+  </g>
+
+  <g transform="translate(60,695)">
+    <text x="100" y="0" text-anchor="middle" font-size="10" fill="#1E40AF">n_routed_experts = 1024</text>
+    <line x1="0" y1="-6" x2="0" y2="-16" stroke="#3B82F6" stroke-width="1"/>
+    <line x1="0" y1="-16" x2="400" y2="-16" stroke="#3B82F6" stroke-width="1.5"/>
+    <line x1="400" y1="-6" x2="400" y2="-16" stroke="#3B82F6" stroke-width="1"/>
+
+    <text x="600" y="0" text-anchor="middle" font-size="10" fill="#64748B">zero_expert_num = 512</text>
+    <line x1="400" y1="-6" x2="400" y2="-24" stroke="#94A3B8" stroke-width="1"/>
+    <line x1="400" y1="-24" x2="800" y2="-24" stroke="#94A3B8" stroke-width="1.5"/>
+    <line x1="800" y1="-6" x2="800" y2="-24" stroke="#94A3B8" stroke-width="1"/>
+  </g>
+
+  <!-- ==================== Legend ==================== -->
+  <rect x="60" y="725" width="820" height="120" rx="10" fill="#FAFAFA" stroke="#E5E7EB"/>
+  <text x="470" y="748" text-anchor="middle" font-size="12" font-weight="700" fill="#374151">图例与噪声策略</text>
+
+  <rect x="90" y="762" width="16" height="14" rx="3" fill="#3B82F6"/>
+  <text x="114" y="774" font-size="11" fill="#475569">原始专家 (保留)</text>
+
+  <rect x="250" y="762" width="16" height="14" rx="3" fill="url(#g-exp)" stroke="#F97316" stroke-width="1"/>
+  <text x="274" y="774" font-size="11" fill="#475569">复制副本</text>
+
+  <rect x="380" y="762" width="16" height="14" rx="3" fill="#EDE9FE" stroke="#7C3AED" stroke-width="1"/>
+  <text x="404" y="774" font-size="11" fill="#475569">Router 权重</text>
+
+  <rect x="530" y="762" width="16" height="14" rx="3" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1"/>
+  <text x="554" y="774" font-size="11" fill="#475569">Zero Expert (精确复制，不加噪)</text>
+
+  <text x="90"  y="810" font-size="11" fill="#475569"><tspan font-weight="600" fill="#7C3AED">--router-noise-scale</tspan>  Router 复制行加噪 → 副本获得不同路由分数</text>
+  <text x="90"  y="830" font-size="11" fill="#475569"><tspan font-weight="600" fill="#EA580C">--expert-noise-scale</tspan>  Expert 复制权重加噪 → 副本从初始化起函数不同</text>
+</svg>

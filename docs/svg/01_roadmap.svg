@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 260" font-family="system-ui,-apple-system,sans-serif">
+<defs>
+  <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
+  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
+  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444"/></marker>
+  <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
+  <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/></filter>
+</defs>
+
+  <text x="400" y="28" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">LLM Parameter Expansion — Technology Roadmap</text>
+  <line x1="150" y1="40" x2="650" y2="40" stroke="#CBD5E1"/>
+  <rect x="295" y="52" width="210" height="38" rx="10" fill="#1E293B" filter="url(#sh)"/>
+  <text x="400" y="77" text-anchor="middle" font-size="13" fill="#fff" font-weight="700">LLM Param Expansion</text>
+  <line x1="400" y1="90" x2="400" y2="102" stroke="#94A3B8" stroke-width="1.5"/>
+  <line x1="200" y1="102" x2="600" y2="102" stroke="#94A3B8" stroke-width="1.5"/>
+  <line x1="200" y1="102" x2="200" y2="118" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ah)"/>
+  <line x1="600" y1="102" x2="600" y2="118" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="100" y="122" width="200" height="36" rx="10" fill="#3B82F6" filter="url(#sh)"/>
+  <text x="200" y="146" text-anchor="middle" font-size="12" fill="#fff" font-weight="700">Architecture Unchanged</text>
+  <rect x="500" y="122" width="200" height="36" rx="10" fill="#EF4444" filter="url(#sh)"/>
+  <text x="600" y="146" text-anchor="middle" font-size="12" fill="#fff" font-weight="700">Architecture Changed</text>
+  <line x1="200" y1="158" x2="200" y2="166" stroke="#94A3B8" stroke-width="1"/>
+  <line x1="100" y1="166" x2="300" y2="166" stroke="#94A3B8" stroke-width="1"/>
+  <line x1="100" y1="166" x2="100" y2="178" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <line x1="200" y1="166" x2="200" y2="178" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <line x1="300" y1="166" x2="300" y2="178" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <rect x="55" y="182" width="90" height="30" rx="6" fill="#EFF6FF" stroke="#3B82F6" filter="url(#sh)"/><text x="100" y="202" text-anchor="middle" font-size="10" fill="#1E40AF" font-weight="600">+ Depth</text>
+  <rect x="155" y="182" width="90" height="30" rx="6" fill="#EFF6FF" stroke="#3B82F6" filter="url(#sh)"/><text x="200" y="202" text-anchor="middle" font-size="10" fill="#1E40AF" font-weight="600">+ Width</text>
+  <rect x="255" y="182" width="90" height="30" rx="6" fill="#EFF6FF" stroke="#3B82F6" filter="url(#sh)"/><text x="300" y="202" text-anchor="middle" font-size="10" fill="#1E40AF" font-weight="600">Mixed</text>
+  <text x="100" y="228" text-anchor="middle" font-size="9" fill="#64748B">DUS / LLaMA-Pro</text><text x="100" y="240" text-anchor="middle" font-size="9" fill="#64748B">LESA</text>
+  <text x="200" y="228" text-anchor="middle" font-size="9" fill="#64748B">Net2Net</text>
+  <text x="300" y="228" text-anchor="middle" font-size="9" fill="#64748B">MSG</text>
+  <line x1="600" y1="158" x2="600" y2="166" stroke="#94A3B8" stroke-width="1"/>
+  <line x1="500" y1="166" x2="700" y2="166" stroke="#94A3B8" stroke-width="1"/>
+  <line x1="500" y1="166" x2="500" y2="178" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <line x1="600" y1="166" x2="600" y2="178" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <line x1="700" y1="166" x2="700" y2="178" stroke="#94A3B8" stroke-width="1" marker-end="url(#ah)"/>
+  <rect x="450" y="182" width="100" height="30" rx="6" fill="#FEF2F2" stroke="#EF4444" filter="url(#sh)"/><text x="500" y="202" text-anchor="middle" font-size="10" fill="#991B1B" font-weight="600">Dense→MoE</text>
+  <rect x="550" y="182" width="100" height="30" rx="6" fill="#FEF2F2" stroke="#EF4444" filter="url(#sh)"/><text x="600" y="202" text-anchor="middle" font-size="10" fill="#991B1B" font-weight="600">Attn Upgrade</text>
+  <rect x="650" y="182" width="100" height="30" rx="6" fill="#FEF2F2" stroke="#EF4444" filter="url(#sh)"/><text x="700" y="202" text-anchor="middle" font-size="10" fill="#991B1B" font-weight="600">Expand+KD</text>
+  <text x="500" y="228" text-anchor="middle" font-size="9" fill="#64748B">MoE Upcycling</text>
+  <text x="600" y="228" text-anchor="middle" font-size="9" fill="#64748B">MHA→GQA→MLA</text>
+  <text x="700" y="228" text-anchor="middle" font-size="9" fill="#64748B">Teacher KD</text>
+
+</svg>

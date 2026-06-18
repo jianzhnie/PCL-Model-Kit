@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" font-family="system-ui,-apple-system,sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
+    <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
+    <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
+    <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".08"/></filter>
+  </defs>
+
+  <text x="450" y="32" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A">M2: MoE Depth Expansion — Identity Block Interleaving</text>
+  <line x1="140" y1="44" x2="760" y2="44" stroke="#CBD5E1"/>
+
+  <!-- ==================== Section 1: Identity Block Internals ==================== -->
+  <text x="450" y="72" text-anchor="middle" font-size="13" font-weight="600" fill="#334155">Identity Block Internal Structure</text>
+
+  <rect x="390" y="86" width="120" height="30" rx="6" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5"/>
+  <text x="450" y="106" text-anchor="middle" font-size="12" font-weight="700" fill="#1E40AF">Input x</text>
+  <line x1="450" y1="116" x2="450" y2="132" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- Attention sub-block -->
+  <rect x="140" y="136" width="620" height="120" rx="10" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6,3"/>
+  <text x="158" y="154" font-size="10" fill="#94A3B8" font-weight="600">ATTENTION PATH</text>
+
+  <rect x="395" y="162" width="110" height="26" rx="5" fill="#F1F5F9" stroke="#94A3B8"/><text x="450" y="180" text-anchor="middle" font-size="10" fill="#475569">RMSNorm</text>
+  <line x1="450" y1="136" x2="450" y2="162" stroke="#64748B" stroke-width="1"/>
+  <line x1="450" y1="188" x2="450" y2="198" stroke="#64748B" stroke-width="1" marker-end="url(#ah)"/>
+  <rect x="380" y="200" width="140" height="26" rx="5" fill="#DBEAFE" stroke="#3B82F6"/><text x="450" y="218" text-anchor="middle" font-size="10" fill="#1E40AF" font-weight="500">MLA Self-Attention</text>
+  <line x1="450" y1="226" x2="450" y2="236" stroke="#64748B" stroke-width="1" marker-end="url(#ah)"/>
+  <rect x="390" y="238" width="120" height="26" rx="5" fill="#FEE2E2" stroke="#EF4444" stroke-width="1.5"/><text x="450" y="256" text-anchor="middle" font-size="11" font-weight="700" fill="#DC2626">o_proj = 0</text>
+
+  <!-- Residual bypass -->
+  <path d="M390,101 L210,101 L210,280" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="6,3"/>
+  <circle cx="450" cy="280" r="14" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/><text x="450" y="285" text-anchor="middle" font-size="14" font-weight="700" fill="#059669">+</text>
+  <line x1="210" y1="280" x2="436" y2="280" stroke="#10B981" stroke-width="2" marker-end="url(#ag)"/>
+  <line x1="450" y1="264" x2="450" y2="266" stroke="#64748B" stroke-width="1"/>
+  <text x="660" y="285" font-size="12" font-weight="600" fill="#059669">x + 0 = x</text>
+
+  <!-- MoE FFN sub-block -->
+  <rect x="140" y="300" width="620" height="90" rx="10" fill="#F8FAFC" stroke="#E2E8F0" stroke-dasharray="6,3"/>
+  <text x="158" y="318" font-size="10" fill="#94A3B8" font-weight="600">MoE FFN PATH</text>
+  <line x1="450" y1="294" x2="450" y2="326" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="330" y="328" width="80" height="24" rx="4" fill="#E0E7FF" stroke="#6366F1"/><text x="370" y="345" text-anchor="middle" font-size="9" fill="#4338CA">Router Top-K</text>
+  <rect x="420" y="328" width="100" height="24" rx="4" fill="#DBEAFE" stroke="#3B82F6"/><text x="470" y="345" text-anchor="middle" font-size="9" fill="#1E40AF">Expert gate/up</text>
+  <line x1="450" y1="326" x2="370" y2="328" stroke="#64748B" stroke-width="1"/>
+  <line x1="450" y1="326" x2="470" y2="328" stroke="#64748B" stroke-width="1"/>
+  <rect x="395" y="358" width="110" height="24" rx="4" fill="#FEE2E2" stroke="#EF4444" stroke-width="1.5"/><text x="450" y="375" text-anchor="middle" font-size="11" font-weight="700" fill="#DC2626">down_proj = 0</text>
+  <line x1="450" y1="352" x2="450" y2="358" stroke="#64748B" stroke-width="1"/>
+
+  <!-- Residual bypass MoE -->
+  <path d="M210,280 L210,406" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="6,3"/>
+  <circle cx="450" cy="406" r="14" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/><text x="450" y="411" text-anchor="middle" font-size="14" font-weight="700" fill="#059669">+</text>
+  <line x1="210" y1="406" x2="436" y2="406" stroke="#10B981" stroke-width="2" marker-end="url(#ag)"/>
+  <line x1="450" y1="382" x2="450" y2="392" stroke="#64748B" stroke-width="1"/>
+  <text x="660" y="411" font-size="12" font-weight="600" fill="#059669">x + 0 = x</text>
+
+  <!-- Output -->
+  <rect x="390" y="428" width="120" height="28" rx="6" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/>
+  <text x="450" y="447" text-anchor="middle" font-size="12" font-weight="700" fill="#047857">Output = x</text>
+  <line x1="450" y1="420" x2="450" y2="428" stroke="#10B981" stroke-width="1.5" marker-end="url(#ag)"/>
+
+  <!-- Residual label -->
+  <text x="198" y="210" text-anchor="end" font-size="10" fill="#10B981" font-weight="600" transform="rotate(-90,198,210)">Residual Bypass</text>
+
+  <!-- Layer sequence at bottom -->
+  <text x="450" y="474" text-anchor="middle" font-size="11" font-weight="600" fill="#334155">Interleave Layout: L0 → <tspan fill="#C2410C">ID</tspan> → L1 → <tspan fill="#C2410C">ID</tspan> → L2 → <tspan fill="#C2410C">ID</tspan> → ··· → LN → <tspan fill="#C2410C">ID</tspan></text>
+</svg>

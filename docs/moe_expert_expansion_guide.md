@@ -4,6 +4,8 @@
 
 ### 核心思想
 
+<img src="moe_expert_expansion.svg" alt="MoE 专家数扩展原理示意图" width="940"/>
+
 MoE 专家数扩展（方案 M1，Expert Upcycling）通过复制已有专家来增加总专家数，同时保持 Top-K 路由不变。由于每个 token 仍只激活 K 个专家，**推理时的计算量几乎不变**，但总参数量随专家数线性增长。
 
 这是 MoE 架构独有的优势——在推理成本近似不变的前提下实现参数翻倍。

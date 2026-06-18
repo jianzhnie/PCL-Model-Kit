@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 150" font-family="system-ui,-apple-system,sans-serif">
+<defs>
+  <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
+  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
+  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444"/></marker>
+  <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
+  <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/></filter>
+</defs>
+
+  <text x="390" y="24" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">MoE Upcycling — Dense → Sparse Mixture-of-Experts</text>
+  <line x1="150" y1="36" x2="630" y2="36" stroke="#CBD5E1"/>
+  <g transform="translate(20,50)">
+    <rect x="0" y="8" width="60" height="32" rx="5" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5" filter="url(#sh)"/><text x="30" y="30" text-anchor="middle" font-size="11" fill="#1E40AF" font-weight="600">x</text>
+    <line x1="60" y1="24" x2="78" y2="24" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+    <rect x="80" y="8" width="82" height="32" rx="5" fill="#DBEAFE" stroke="#3B82F6" filter="url(#sh)"/><text x="121" y="29" text-anchor="middle" font-size="10" fill="#1E40AF">Attention</text>
+    <line x1="162" y1="24" x2="180" y2="24" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+    <rect x="182" y="2" width="90" height="44" rx="6" fill="#EF4444" filter="url(#sh)"/><text x="227" y="22" text-anchor="middle" font-size="11" fill="#fff" font-weight="800">Router</text><text x="227" y="38" text-anchor="middle" font-size="9" fill="#FECACA">Top-K</text>
+    <line x1="272" y1="12" x2="306" y2="6" stroke="#10B981" stroke-width="2"/>
+    <line x1="272" y1="24" x2="306" y2="24" stroke="#10B981" stroke-width="2"/>
+    <line x1="272" y1="36" x2="306" y2="46" stroke="#CBD5E1" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <line x1="272" y1="36" x2="306" y2="64" stroke="#CBD5E1" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <rect x="308" y="0" width="72" height="18" rx="3" fill="#10B981" filter="url(#sh)"/><text x="344" y="13" text-anchor="middle" font-size="8" fill="#fff" font-weight="700">Expert 1 ✓</text>
+    <rect x="308" y="22" width="72" height="18" rx="3" fill="#10B981" filter="url(#sh)"/><text x="344" y="35" text-anchor="middle" font-size="8" fill="#fff" font-weight="700">Expert 2 ✓</text>
+    <rect x="308" y="44" width="72" height="18" rx="3" fill="#E2E8F0"/><text x="344" y="57" text-anchor="middle" font-size="8" fill="#94A3B8">Expert 3</text>
+    <rect x="308" y="66" width="72" height="18" rx="3" fill="#E2E8F0"/><text x="344" y="79" text-anchor="middle" font-size="8" fill="#94A3B8">Expert N</text>
+    <line x1="380" y1="12" x2="412" y2="32" stroke="#10B981" stroke-width="1.5"/>
+    <line x1="380" y1="31" x2="412" y2="32" stroke="#10B981" stroke-width="1.5"/>
+    <circle cx="428" cy="32" r="14" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/><text x="428" y="37" text-anchor="middle" font-size="14" font-weight="700" fill="#059669">Σ</text>
+    <line x1="442" y1="32" x2="470" y2="32" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+    <rect x="472" y="18" width="60" height="28" rx="5" fill="#D1FAE5" stroke="#10B981" filter="url(#sh)"/><text x="502" y="37" text-anchor="middle" font-size="11" fill="#047857" font-weight="700">out</text>
+    <text x="555" y="18" font-size="10" fill="#10B981" font-weight="600">← Active (Top-K)</text>
+    <text x="555" y="64" font-size="10" fill="#94A3B8">← Inactive</text>
+    <text x="555" y="84" font-size="10" fill="#DC2626" font-weight="600">NOT func-preserving</text>
+  </g>
+
+</svg>

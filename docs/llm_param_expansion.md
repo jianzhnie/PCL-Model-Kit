@@ -25,6 +25,10 @@
 
 **两大技术路线**：
 
+<img src="svg/01_roadmap.svg" alt="LLM参数扩增技术路线" width="780"/>
+
+<details><summary>Mermaid 源码（备用）</summary>
+
 ```mermaid
 graph TD
     A["LLM 参数扩增"] --> B["🔵 架构不变"]
@@ -39,6 +43,8 @@ graph TD
     style B fill:#3498DB,color:#fff
     style C fill:#E74C3C,color:#fff
 ```
+
+</details>
 
 **关键评估维度**：
 - 扩展后即时精度损失（zero-shot degradation）
@@ -60,6 +66,10 @@ graph TD
 **来源**：[Upstage](https://www.upstage.ai), [arXiv:2312.15166](https://arxiv.org/abs/2312.15166) (2023)
 **代表成果**：Llama2-7B → SOLAR-10.7B (48层)，Phi-3-medium → Solar Pro-22B
 
+<img src="svg/02_solar_dus.svg" alt="SOLAR DUS" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph LR
     E[Embedding] --> L0["L0~L7"]
@@ -70,6 +80,8 @@ graph LR
     style L1 fill:#3498DB,color:#fff
     style L1c fill:#E74C3C,color:#fff
 ```
+
+</details>
 
 **原理**：SOLAR DUS 对原模型进行两次不同的裁剪——从第一份副本保留前 N 层（上段），从第二份副本保留后 N 层（下段），然后按"上段 → 下段"顺序拼接成更深的网络。由于两段之间存在若干重叠层（即在两份副本中都被保留的中间层），拼接点处的隐藏状态分布尽可能一致，从而减少层数骤增带来的表示断裂。该方法实现简单，但并非 function-preserving，因此需要大量 continued pretraining 来恢复精度。
 
@@ -91,6 +103,10 @@ graph LR
 **来源**：Tencent ARC & HKU, [arXiv:2401.02415](https://arxiv.org/abs/2401.02415) (2024)
 **代表成果**：LLaMA2-7B → LLaMA-Pro-8.3B (40层)，Mistral-7B → Mistral-Pro
 
+<img src="svg/03_llama_pro.svg" alt="LLaMA-Pro" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph TD
     X[x] --> N1[RMSNorm]
@@ -107,6 +123,8 @@ graph TD
     style DP fill:#F1C40F,color:#333
     style ADD2 fill:#27AE60,color:#fff
 ```
+
+</details>
 
 **核心初始化代码**：
 ```python
@@ -141,6 +159,10 @@ new_block.mlp.down_proj.weight.data.zero_()       # MLP 输出 → 零
 
 **来源**：上海交通大学, [arXiv:2502.13794](https://arxiv.org/abs/2502.13794) (2025)
 
+<img src="svg/04_lesa.svg" alt="LESA" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph LR
     L1["Layer_i"] -->|SVD| F1["U_i"]
@@ -151,6 +173,8 @@ graph LR
     style NET fill:#3498DB,color:#fff
     style PRED fill:#27AE60,color:#fff
 ```
+
+</details>
 
 **原理**：LESA 假设相邻两层之间的参数存在可学习的低秩过渡关系。具体做法是对原模型相邻层的权重矩阵进行 SVD 分解，提取主要特征向量；然后训练一个轻量预测网络，根据相邻层的特征表示插值生成新层的参数。这样插入的新层不是简单复制，而是“预测”出来的，具有更接近真实中间层的表达能力，因此初始精度高于 DUS，收敛速度也更快。
 
@@ -180,6 +204,10 @@ graph LR
 **来源**：智源研究院 BAAI, [arXiv:2305.02869](https://arxiv.org/abs/2305.02869) (2023)
 **代表成果**：FLM-101B, Tele-FLM-1T
 
+<img src="svg/05_msg.svg" alt="MSG" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph TD
     ORIG["原始 Block"] --> DEPTH["🔵 +深度\n恒等块"]
@@ -192,6 +220,8 @@ graph TD
     style HEADS fill:#27AE60,color:#fff
     style FFN fill:#9B59B6,color:#fff
 ```
+
+</details>
 
 **原理**：MSG 将“扩增”视为一个渐进的掩码学习过程。对每一个待扩展维度（深度、宽度、头数、FFN），新增参数初始时被一个二进制掩码屏蔽，仅保留与原模型完全等价的功能子网络；训练过程中按预定 schedule 逐步解锁新参数，使模型先在原始能力空间内稳定，再迁移到更大的参数空间。
 
@@ -211,6 +241,10 @@ graph TD
 
 **来源**：Google Brain, [Net2Net: Accelerating Learning via Knowledge Transfer](https://arxiv.org/abs/1511.05641), ICLR 2016
 
+<img src="svg/06_net2net.svg" alt="Net2Net" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph TD
     subgraph Net2WiderNet["🔴 宽度扩展"]
@@ -224,6 +258,8 @@ graph TD
     L2 --> EQ
     style EQ fill:#27AE60,color:#fff
 ```
+
+</details>
 
 **原理**：Net2Net 提出两种函数保持（function-preserving）的模型变换：
 
@@ -250,6 +286,10 @@ graph TD
 **来源**：[Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints](https://arxiv.org/abs/2212.05055) (Komatsuzaki et al., ICLR 2023); 工业实践包括 [Skywork-MoE](https://huggingface.co/Skywork/Skywork-MoE)、Amazon 2025 专家复用报告等
 **代表成果**：Skywork-MoE (13B→146B 总参数)
 
+<img src="svg/07_moe_upcycling.svg" alt="MoE Upcycling" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph LR
     IN[x] --> A[Attention]
@@ -268,6 +308,8 @@ graph LR
     style EN fill:#BDC3C7,color:#333
     style SUM fill:#3498DB,color:#fff
 ```
+
+</details>
 
 **原理**：MoE Upcycling（又称 Sparse Upcycling）的核心思想是：把 Dense 模型中已经训练好的 FFN 权重复制多份，作为多个“专家”的初始参数；同时为每层新增一个可学习的 Router，根据输入 token 的 hidden state 选择 Top-K 个专家参与计算。由于每个专家本质上仍是原 FFN 的副本，模型在扩展瞬间已经具备较强的基础能力；Router 虽然随机初始化，但专家权重提供了良好的优化起点，因此只需相对少量的 continued pretraining 即可恢复甚至超越原模型精度。
 
@@ -293,6 +335,10 @@ graph LR
 
 **来源**：[DeepSeek-V2 MLA](https://arxiv.org/abs/2405.04434) (DeepSeek-AI, 2024); Llama 2/3 GQA (Touvron et al., 2023; [Dubey et al., 2024](https://arxiv.org/abs/2407.21783))
 
+<img src="svg/08_attention.svg" alt="Attention" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph TD
     subgraph MHA["🔵 MHA: 独立 KV"]
@@ -313,6 +359,8 @@ graph TD
     style COMP fill:#E74C3C,color:#fff
     style CACHE fill:#27AE60,color:#fff
 ```
+
+</details>
 
 **原理**：注意力机制的升级并不直接以“翻倍参数”为目标，而是通过改变 Key/Value 的表示与缓存方式来优化推理效率或调整模型容量。
 
@@ -338,6 +386,10 @@ graph TD
 
 **来源**：社区实践 [Qwen3-72B-Embiggened](https://huggingface.co/cognitivecomputations/Qwen3-72B-Embiggened) (cognitivecomputations, 2025)
 
+<img src="svg/09_distillation.svg" alt="Distillation" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph LR
     SMALL["Qwen3-32B"] ==>|"LLaMA-Pro / MSG"| EXPANDED["扩展骨架 ~72B 🔴"]
@@ -350,6 +402,8 @@ graph LR
     style DISTILL fill:#3498DB,color:#fff
     style FINAL fill:#27AE60,color:#fff
 ```
+
+</details>
 
 **原理**：该流水线将“参数扩增”与“知识迁移”解耦。第一步用 function-preserving 的方法（LLaMA-Pro 或 MSG）把小模型扩展为更大的骨架，保证初始精度不崩盘；第二步让一个大 Teacher 模型对相同输入生成 soft labels（logits 分布），用蒸馏损失
 
@@ -382,6 +436,10 @@ L = λ * CE(y_true, y_student) + (1-λ) * T² * KL(softmax(z_teacher/T), softmax
 
 ### MoE 扩展维度总览
 
+<img src="svg/10_moe_overview.svg" alt="MoE Overview" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph TD
     M["MoE 基座扩展"] --> E["🔵 专家数扩展"]
@@ -400,6 +458,8 @@ graph TD
     style A fill:#9B59B6,color:#fff
 ```
 
+</details>
+
 ---
 
 ### 方案 M1：Expert Upcycling — 专家数量扩展（首选）
@@ -415,6 +475,10 @@ graph TD
 - **对称性破坏**：见下方三种策略；这是决定扩展效果的关键步骤。
 
 **核心思路**：将已有 E 个专家的 MoE 扩展为 mE 个专家，保持 Top-K 路由不变，推理激活参数不变。
+
+<img src="svg/11_m1_expert.svg" alt="M1 Expert" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
 
 ```mermaid
 graph LR
@@ -433,6 +497,8 @@ graph LR
     style F2 fill:#E74C3C,color:#fff
     style F4 fill:#E74C3C,color:#fff
 ```
+
+</details>
 
 **三种专家选择策略**：
 
@@ -486,6 +552,10 @@ W_router_new[:, new_idx] = W_router[:, src_idx] + noise
 
 **原理**：在相邻 MoE 层之间插入新层，新层中 Attention 的 `o_proj` 和每个专家的 `down_proj` 初始化为零，因此新层整体满足 `Layer(x) ≈ x`，模型函数保持不变。由于新层包含完整 Router + 专家组结构，插入后总专家数随层数增加，但每层仍只激活 K 个专家，因此推理延迟与 Dense 深度扩展一样线性增加，而总参数增长更快。
 
+<img src="svg/12_m2_depth.svg" alt="M2 Depth" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph LR
     subgraph EXP["扩展后 2L 层"]
@@ -495,6 +565,8 @@ graph LR
     style I1 fill:#E74C3C,color:#fff
     style IN fill:#E74C3C,color:#fff
 ```
+
+</details>
 
 **关键要点**：
 - 新插入的 MoE 层中，**所有专家的 down_proj 初始化为零** → 恒等映射
@@ -510,6 +582,10 @@ graph LR
 
 **原理**：对每个专家内部的 FFN 做宽度扩展，等价于对 Dense FFN 做 MSG 风格的零填充生长。新增的中间维度初始为零，`down_proj` 对新增维度对应的行也初始化为零，因此专家函数保持不变；扩展后每个被激活专家承担的计算量增加，整体表达能力增强。若扩展共享的 `d_model`，则需同步调整所有投影矩阵（Attention、FFN、Embedding、LM Head）的输入/输出维度，并在新增维度上做零填充，保证 function-preserving。
 
+<img src="svg/13_m3_width.svg" alt="M3 Width" width="780"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph LR
     subgraph ORIG["原始专家"]
@@ -522,6 +598,8 @@ graph LR
     style G2 fill:#E74C3C,color:#fff
     style D2 fill:#E74C3C,color:#fff
 ```
+
+</details>
 
 **注意**：
 - 扩展 `intermediate_size` 不影响专家间的 Router（Router 只看 `d_model`）
@@ -552,6 +630,10 @@ graph LR
 
 ### MoE 基座扩展推荐决策
 
+<img src="svg/14_moe_decision.svg" alt="MoE Decision" width="680"/>
+
+<details><summary>Mermaid 源码</summary>
+
 ```mermaid
 graph TD
     START["MoE 基座扩参"] --> Q1{"推理成本能否增加?"}
@@ -566,6 +648,8 @@ graph TD
     style COMBO fill:#3498DB,color:#fff
     style M3 fill:#E74C3C,color:#fff
 ```
+
+</details>
 
 **核心结论**：MoE 基座模型的参数扩展**首选 M1（专家数扩展）**——这是 MoE 架构独有的优势，能在推理成本几乎不变的前提下实现参数翻倍。配合效用导向的专家选择和 Cluster-Aware 对称性破坏，可以最大化扩展收益。
 
@@ -678,6 +762,10 @@ Phase 2（50-70% 训练量）: 解冻全部，LR 降为 Phase 1 的 1/5~1/10
 
 ### 综合决策流程
 
+<img src="svg/15_qwen3_decision.svg" alt="Qwen3参数扩增决策流程" width="780"/>
+
+<details><summary>Mermaid 源码（备用）</summary>
+
 ```mermaid
 graph TD
     START["需要扩增参数"] --> Q1{"接受架构变化?"}
@@ -702,6 +790,8 @@ graph TD
     style C fill:#E74C3C,color:#fff
     style D fill:#9B59B6,color:#fff
 ```
+
+</details>
 
 ### 方案 A（首选 / 架构不变）：LLaMA-Pro 恒等块插入
 

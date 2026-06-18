@@ -4,6 +4,8 @@
 
 ### 核心思想
 
+<img src="moe_depth_expansion.svg" alt="MoE 层深度扩展原理示意图" width="920"/>
+
 MoE 层深度扩展（方案 M2）通过在已有 MoE 层之间插入**恒等初始化**的新层来增加模型深度。新层在初始化时满足 `Layer(x) = x`，因此扩展后的模型与原模型在前向传播上**完全等价**（function-preserving），不会产生任何精度损失。
 
 ### 恒等映射原理

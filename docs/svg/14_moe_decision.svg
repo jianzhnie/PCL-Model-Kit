@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 200" font-family="system-ui,-apple-system,sans-serif">
+<defs>
+  <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
+  <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
+  <marker id="ar" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EF4444"/></marker>
+  <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
+  <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/></filter>
+</defs>
+
+  <text x="340" y="24" text-anchor="middle" font-size="17" font-weight="700" fill="#0F172A">MoE Base Expansion — Decision Flow</text>
+  <line x1="160" y1="36" x2="520" y2="36" stroke="#CBD5E1"/>
+  <rect x="240" y="44" width="200" height="32" rx="8" fill="#1E293B" filter="url(#sh)"/><text x="340" y="66" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">MoE Base Expansion</text>
+  <line x1="340" y1="76" x2="340" y2="90" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+  <polygon points="340,94 420,118 340,142 260,118" fill="#FEF3C7" stroke="#EAB308" stroke-width="1.5" filter="url(#sh)"/>
+  <text x="340" y="122" text-anchor="middle" font-size="10" fill="#78350F" font-weight="700">Can inference cost increase?</text>
+  <line x1="260" y1="118" x2="150" y2="118" stroke="#64748B" stroke-width="1.5"/><text x="200" y="110" font-size="9" fill="#64748B" font-weight="600">No</text>
+  <line x1="150" y1="118" x2="150" y2="138" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="60" y="142" width="180" height="32" rx="8" fill="#10B981" filter="url(#sh)"/><text x="150" y="163" text-anchor="middle" font-size="11" fill="#fff" font-weight="700">✅ M1 Expert Count — FLOPs ≈ same</text>
+  <line x1="420" y1="118" x2="530" y2="118" stroke="#64748B" stroke-width="1.5"/><text x="476" y="110" font-size="9" fill="#64748B" font-weight="600">Yes</text>
+  <line x1="530" y1="118" x2="530" y2="138" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+  <polygon points="530,142 600,162 530,182 460,162" fill="#FEF3C7" stroke="#EAB308" stroke-width="1.2" filter="url(#sh)"/>
+  <text x="530" y="166" text-anchor="middle" font-size="9" fill="#78350F" font-weight="700">Goal?</text>
+  <line x1="460" y1="162" x2="415" y2="162" stroke="#64748B" stroke-width="1"/><text x="434" y="155" font-size="8" fill="#64748B">Exact 2×</text>
+  <line x1="415" y1="162" x2="415" y2="182" stroke="#64748B" stroke-width="1" marker-end="url(#ah)"/>
+  <rect x="355" y="186" width="120" height="24" rx="6" fill="#3B82F6" filter="url(#sh)"/><text x="415" y="202" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">M1+M2 Combo</text>
+  <line x1="600" y1="162" x2="635" y2="162" stroke="#64748B" stroke-width="1"/><text x="622" y="155" font-size="8" fill="#64748B">Power</text>
+  <line x1="635" y1="162" x2="635" y2="182" stroke="#64748B" stroke-width="1" marker-end="url(#ah)"/>
+  <rect x="575" y="186" width="120" height="24" rx="6" fill="#EF4444" filter="url(#sh)"/><text x="635" y="202" text-anchor="middle" font-size="10" fill="#fff" font-weight="600">M3 Expert Width</text>
+
+</svg>

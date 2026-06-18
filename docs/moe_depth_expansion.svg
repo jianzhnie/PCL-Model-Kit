@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 820" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6Z" fill="#64748B"/>
+    </marker>
+    <marker id="ah-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6Z" fill="#10B981"/>
+    </marker>
+    <linearGradient id="id-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ==================== Title ==================== -->
+  <text x="460" y="36" text-anchor="middle" font-size="20" font-weight="700" fill="#0F172A">MoE 层深度扩展 (M2) — 恒等初始化原理</text>
+  <line x1="160" y1="48" x2="760" y2="48" stroke="#CBD5E1" stroke-width="1"/>
+
+  <!-- ==================== Section 1: Identity Block ==================== -->
+  <text x="460" y="78" text-anchor="middle" font-size="15" font-weight="600" fill="#334155">新插入层的内部结构（Identity Block）</text>
+
+  <!-- Input x -->
+  <rect x="395" y="95" width="130" height="32" rx="6" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5"/>
+  <text x="460" y="116" text-anchor="middle" font-size="13" font-weight="600" fill="#1E40AF">输入 x</text>
+
+  <!-- Vertical line down from input -->
+  <line x1="460" y1="127" x2="460" y2="148" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- ── Attention Sub-block ── -->
+  <rect x="120" y="152" width="680" height="170" rx="10" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1" stroke-dasharray="6,3"/>
+  <text x="140" y="172" font-size="11" fill="#94A3B8" font-weight="600">ATTENTION 路径</text>
+
+  <!-- RMSNorm -->
+  <rect x="395" y="182" width="130" height="30" rx="5" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+  <text x="460" y="202" text-anchor="middle" font-size="12" fill="#475569">RMSNorm</text>
+  <line x1="460" y1="152" x2="460" y2="182" stroke="#64748B" stroke-width="1.2"/>
+
+  <!-- Self-Attention -->
+  <rect x="370" y="222" width="180" height="34" rx="5" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2"/>
+  <text x="460" y="244" text-anchor="middle" font-size="12" font-weight="500" fill="#1E40AF">MLA Self-Attention</text>
+  <line x1="460" y1="212" x2="460" y2="222" stroke="#64748B" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <!-- o_proj = 0 -->
+  <rect x="385" y="266" width="150" height="30" rx="5" fill="#FEE2E2" stroke="#EF4444" stroke-width="1.5"/>
+  <text x="460" y="286" text-anchor="middle" font-size="12" font-weight="700" fill="#DC2626">o_proj = 0</text>
+  <line x1="460" y1="256" x2="460" y2="266" stroke="#64748B" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <!-- Arrow from o_proj down to "= 0" -->
+  <text x="460" y="312" text-anchor="middle" font-size="12" font-weight="600" fill="#DC2626">输出 = 0</text>
+
+  <!-- Residual fork: draw the bypass line -->
+  <!-- Left bypass from input down to add node -->
+  <line x1="200" y1="148" x2="200" y2="148" stroke="none"/>
+  <path d="M 395,111 L 200,111 L 200,340" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="6,3"/>
+
+  <!-- Add circle (Attention residual) -->
+  <circle cx="460" cy="340" r="16" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/>
+  <text x="460" y="345" text-anchor="middle" font-size="16" font-weight="700" fill="#059669">+</text>
+  <line x1="200" y1="340" x2="444" y2="340" stroke="#10B981" stroke-width="2" marker-end="url(#ah-green)"/>
+  <line x1="460" y1="316" x2="460" y2="324" stroke="#64748B" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <!-- Label: x + 0 = x -->
+  <text x="690" y="345" text-anchor="start" font-size="13" font-weight="600" fill="#059669">x + 0 = x</text>
+
+  <!-- ── MoE FFN Sub-block ── -->
+  <rect x="120" y="370" width="680" height="185" rx="10" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1" stroke-dasharray="6,3"/>
+  <text x="140" y="390" font-size="11" fill="#94A3B8" font-weight="600">MoE FFN 路径</text>
+  <line x1="460" y1="356" x2="460" y2="400" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- RMSNorm 2 -->
+  <rect x="395" y="400" width="130" height="30" rx="5" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+  <text x="460" y="420" text-anchor="middle" font-size="12" fill="#475569">RMSNorm</text>
+
+  <!-- Router + Experts -->
+  <rect x="310" y="440" width="110" height="34" rx="5" fill="#E0E7FF" stroke="#6366F1" stroke-width="1.2"/>
+  <text x="365" y="462" text-anchor="middle" font-size="11" font-weight="500" fill="#4338CA">Router Top-K</text>
+
+  <rect x="440" y="440" width="145" height="34" rx="5" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.2"/>
+  <text x="512" y="462" text-anchor="middle" font-size="11" font-weight="500" fill="#1E40AF">Expert gate/up</text>
+
+  <line x1="460" y1="430" x2="365" y2="440" stroke="#64748B" stroke-width="1"/>
+  <line x1="460" y1="430" x2="512" y2="440" stroke="#64748B" stroke-width="1"/>
+
+  <!-- SwiGLU -->
+  <rect x="395" y="484" width="130" height="28" rx="5" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+  <text x="460" y="503" text-anchor="middle" font-size="11" fill="#475569">SwiGLU</text>
+  <line x1="460" y1="474" x2="460" y2="484" stroke="#64748B" stroke-width="1" marker-end="url(#ah)"/>
+
+  <!-- down_proj = 0 -->
+  <rect x="385" y="520" width="150" height="30" rx="5" fill="#FEE2E2" stroke="#EF4444" stroke-width="1.5"/>
+  <text x="460" y="540" text-anchor="middle" font-size="12" font-weight="700" fill="#DC2626">down_proj = 0</text>
+  <line x1="460" y1="512" x2="460" y2="520" stroke="#64748B" stroke-width="1" marker-end="url(#ah)"/>
+
+  <text x="460" y="568" text-anchor="middle" font-size="12" font-weight="600" fill="#DC2626">输出 = 0</text>
+
+  <!-- Residual bypass for MoE -->
+  <path d="M 200,340 L 200,595" stroke="#10B981" stroke-width="2" fill="none" stroke-dasharray="6,3"/>
+
+  <!-- Add circle (MoE residual) -->
+  <circle cx="460" cy="595" r="16" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/>
+  <text x="460" y="600" text-anchor="middle" font-size="16" font-weight="700" fill="#059669">+</text>
+  <line x1="200" y1="595" x2="444" y2="595" stroke="#10B981" stroke-width="2" marker-end="url(#ah-green)"/>
+  <line x1="460" y1="572" x2="460" y2="579" stroke="#64748B" stroke-width="1.2" marker-end="url(#ah)"/>
+
+  <text x="690" y="600" text-anchor="start" font-size="13" font-weight="600" fill="#059669">x + 0 = x</text>
+
+  <!-- Output = x -->
+  <rect x="388" y="622" width="145" height="32" rx="6" fill="#D1FAE5" stroke="#10B981" stroke-width="2"/>
+  <text x="460" y="643" text-anchor="middle" font-size="13" font-weight="700" fill="#047857">输出 = x (恒等)</text>
+  <line x1="460" y1="611" x2="460" y2="622" stroke="#10B981" stroke-width="1.5" marker-end="url(#ah-green)"/>
+
+  <!-- Residual label -->
+  <text x="188" y="260" text-anchor="end" font-size="11" fill="#10B981" font-weight="600" transform="rotate(-90,188,260)">残差捷径</text>
+
+  <!-- ==================== Section 2: Expansion Layout ==================== -->
+  <line x1="60" y1="675" x2="860" y2="675" stroke="#CBD5E1" stroke-width="1"/>
+  <text x="460" y="702" text-anchor="middle" font-size="15" font-weight="600" fill="#334155">Interleave 扩展布局（28 → 56 层）</text>
+
+  <!-- Original model -->
+  <text x="68" y="732" font-size="12" fill="#64748B" font-weight="600">原始</text>
+  <g transform="translate(120,718)">
+    <rect x="0"   y="0" width="52" height="26" rx="4" fill="#3B82F6"/><text x="26"  y="18" text-anchor="middle" font-size="10" fill="white" font-weight="500">L 0</text>
+    <rect x="58"  y="0" width="52" height="26" rx="4" fill="#3B82F6"/><text x="84"  y="18" text-anchor="middle" font-size="10" fill="white" font-weight="500">L 1</text>
+    <rect x="116" y="0" width="52" height="26" rx="4" fill="#3B82F6"/><text x="142" y="18" text-anchor="middle" font-size="10" fill="white" font-weight="500">L 2</text>
+    <text x="186" y="18" font-size="14" fill="#94A3B8">···</text>
+    <rect x="208" y="0" width="52" height="26" rx="4" fill="#3B82F6"/><text x="234" y="18" text-anchor="middle" font-size="10" fill="white" font-weight="500">L 26</text>
+    <rect x="266" y="0" width="52" height="26" rx="4" fill="#3B82F6"/><text x="292" y="18" text-anchor="middle" font-size="10" fill="white" font-weight="500">L 27</text>
+  </g>
+  <text x="460" y="732" font-size="12" fill="#64748B">28 层</text>
+
+  <!-- Expanded model -->
+  <text x="68" y="782" font-size="12" fill="#64748B" font-weight="600">扩展</text>
+  <g transform="translate(120,768)">
+    <rect x="0"   y="0" width="42" height="26" rx="4" fill="#3B82F6"/><text x="21"  y="18" text-anchor="middle" font-size="9" fill="white" font-weight="500">L0</text>
+    <rect x="45"  y="0" width="42" height="26" rx="4" fill="url(#id-grad)" stroke="#F97316" stroke-width="1.2"/><text x="66"  y="18" text-anchor="middle" font-size="9" fill="#C2410C" font-weight="600">ID</text>
+    <rect x="90"  y="0" width="42" height="26" rx="4" fill="#3B82F6"/><text x="111" y="18" text-anchor="middle" font-size="9" fill="white" font-weight="500">L1</text>
+    <rect x="135" y="0" width="42" height="26" rx="4" fill="url(#id-grad)" stroke="#F97316" stroke-width="1.2"/><text x="156" y="18" text-anchor="middle" font-size="9" fill="#C2410C" font-weight="600">ID</text>
+    <rect x="180" y="0" width="42" height="26" rx="4" fill="#3B82F6"/><text x="201" y="18" text-anchor="middle" font-size="9" fill="white" font-weight="500">L2</text>
+    <rect x="225" y="0" width="42" height="26" rx="4" fill="url(#id-grad)" stroke="#F97316" stroke-width="1.2"/><text x="246" y="18" text-anchor="middle" font-size="9" fill="#C2410C" font-weight="600">ID</text>
+    <text x="280" y="18" font-size="14" fill="#94A3B8">···</text>
+    <rect x="304" y="0" width="42" height="26" rx="4" fill="#3B82F6"/><text x="325" y="18" text-anchor="middle" font-size="9" fill="white" font-weight="500">L26</text>
+    <rect x="349" y="0" width="42" height="26" rx="4" fill="url(#id-grad)" stroke="#F97316" stroke-width="1.2"/><text x="370" y="18" text-anchor="middle" font-size="9" fill="#C2410C" font-weight="600">ID</text>
+    <rect x="394" y="0" width="42" height="26" rx="4" fill="#3B82F6"/><text x="415" y="18" text-anchor="middle" font-size="9" fill="white" font-weight="500">L27</text>
+    <rect x="439" y="0" width="42" height="26" rx="4" fill="url(#id-grad)" stroke="#F97316" stroke-width="1.2"/><text x="460" y="18" text-anchor="middle" font-size="9" fill="#C2410C" font-weight="600">ID</text>
+  </g>
+  <text x="610" y="782" font-size="12" fill="#64748B">56 层（前向输出不变）</text>
+
+  <!-- Legend -->
+  <rect x="640" y="718" width="18" height="14" rx="3" fill="#3B82F6"/>
+  <text x="664" y="730" font-size="11" fill="#475569">原始层</text>
+  <rect x="720" y="718" width="18" height="14" rx="3" fill="url(#id-grad)" stroke="#F97316" stroke-width="1"/>
+  <text x="744" y="730" font-size="11" fill="#475569">恒等层 (o_proj=0, down_proj=0)</text>
+</svg>
