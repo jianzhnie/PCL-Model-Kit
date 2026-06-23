@@ -2,7 +2,10 @@
 
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
+
+import torch
 
 # Mapping from safetensors dtype string to element size in bytes
 DTYPE_SIZES: dict[str, int] = {
@@ -195,4 +198,67 @@ def auto_detect_shard_size(model_dir: Path, shard_files: list[str]) -> int:
 
     print("WARNING: No shard files found on disk. Using default 8GB target. "
           "Output shards will match this size, not necessarily the originals.")
+    return 8 * 1024 ** 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Shared expansion helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_expert_target_map(
+    original_experts: int, target_experts: int,
+) -> dict[int, list[int]]:
+    """Build source expert -> list of new expert indices for duplication."""
+    targets: dict[int, list[int]] = defaultdict(list)
+    for new_idx in range(original_experts, target_experts):
+        src_idx = new_idx % original_experts
+        targets[src_idx].append(new_idx)
+    return dict(targets)
+
+
+def expand_router_weight(
+    tensor: torch.Tensor,
+    original_experts: int,
+    zero_expert_num: int,
+    expansion_factor: int,
+    router_noise_scale: float = 0.0,
+) -> torch.Tensor:
+    """Expand a router classifier/gate weight with optional noise on copies.
+
+    When router_noise_scale > 0, duplicated blocks get small Gaussian noise to
+    break symmetry so that fine-tuning can differentiate them.
+    """
+    if zero_expert_num > 0:
+        real_part = tensor[:original_experts]
+        zero_part = tensor[original_experts:]
+    else:
+        real_part = tensor
+        zero_part = None
+
+    real_blocks = [real_part]
+    for _ in range(1, expansion_factor):
+        if router_noise_scale > 0:
+            noise = torch.randn_like(real_part) * router_noise_scale * real_part.std()
+            real_blocks.append(real_part + noise)
+        else:
+            real_blocks.append(real_part)
+    expanded_real = torch.cat(real_blocks, dim=0)
+
+    if zero_part is not None:
+        expanded_zero = torch.cat([zero_part] * expansion_factor, dim=0)
+        return torch.cat([expanded_real, expanded_zero], dim=0)
+    return expanded_real
+
+
+def expand_router_bias(
+    tensor: torch.Tensor,
+    original_experts: int,
+    zero_expert_num: int,
+    expansion_factor: int,
+) -> torch.Tensor:
+    """Expand a router score correction bias (exact copies, no noise)."""
+    return expand_router_weight(
+        tensor, original_experts, zero_expert_num, expansion_factor,
+        router_noise_scale=0.0,
+    )
     return 8 * 1024 ** 3

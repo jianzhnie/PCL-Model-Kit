@@ -38,6 +38,9 @@ from tqdm import tqdm
 from utils.shared import (
     EXPERT_COUNT_KEYS,
     auto_detect_shard_size,
+    build_expert_target_map,
+    expand_router_bias,
+    expand_router_weight,
     find_expert_count,
     get_expert_info,
     get_layer_index,
@@ -101,64 +104,6 @@ def build_layer_mapping(
         f"Interleave mapping length {len(mapping)} != target {target_layers}"
     )
     return mapping
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Expert mapping
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_expert_target_map(
-    original_experts: int, target_experts: int,
-) -> dict[int, list[int]]:
-    targets: dict[int, list[int]] = defaultdict(list)
-    for new_idx in range(original_experts, target_experts):
-        src_idx = new_idx % original_experts
-        targets[src_idx].append(new_idx)
-    return dict(targets)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Router expansion
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def expand_router_weight(
-    tensor: torch.Tensor,
-    original_experts: int,
-    zero_expert_num: int,
-    expansion_factor: int,
-    router_noise_scale: float = 0.0,
-) -> torch.Tensor:
-    if zero_expert_num > 0:
-        real_part = tensor[:original_experts]
-        zero_part = tensor[original_experts:]
-    else:
-        real_part = tensor
-        zero_part = None
-
-    real_blocks = [real_part]
-    for _ in range(1, expansion_factor):
-        if router_noise_scale > 0:
-            noise = torch.randn_like(real_part) * router_noise_scale * real_part.std()
-            real_blocks.append(real_part + noise)
-        else:
-            real_blocks.append(real_part)
-    expanded_real = torch.cat(real_blocks, dim=0)
-
-    if zero_part is not None:
-        expanded_zero = torch.cat([zero_part] * expansion_factor, dim=0)
-        return torch.cat([expanded_real, expanded_zero], dim=0)
-    return expanded_real
-
-
-def expand_router_bias(
-    tensor: torch.Tensor,
-    original_experts: int,
-    zero_expert_num: int,
-    expansion_factor: int,
-) -> torch.Tensor:
-    return expand_router_weight(
-        tensor, original_experts, zero_expert_num, expansion_factor, router_noise_scale=0.0,
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -722,7 +667,7 @@ def main():
         )
         zeroed_count = sum(
             1 for items in assignments_by_shard.values()
-            for _, _, out_key, action in items if action == "zero"
+            for _, _, _, action in items if action == "zero"
         )
         print(f"Output: {total_original:,} original + {total_duplicated:,} expanded "
               f"= {total_original + total_duplicated:,} tensors "
@@ -850,8 +795,10 @@ def main():
             sname,
         )
 
+    metadata = {**index.get("metadata", {})}
+    metadata["total_size"] = total_output_bytes
     new_index = {
-        "metadata": {"total_size": total_output_bytes},
+        "metadata": metadata,
         "weight_map": fixed_weight_map,
     }
     with open(output_dir / "model.safetensors.index.json", "w") as f:

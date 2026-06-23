@@ -38,6 +38,9 @@ from tqdm import tqdm
 from utils.shared import (
     EXPERT_COUNT_KEYS,
     auto_detect_shard_size,
+    build_expert_target_map,
+    expand_router_bias,
+    expand_router_weight,
     find_expert_count,
     get_expert_info,
     get_nbytes_from_meta,
@@ -51,22 +54,6 @@ from utils.shared import (
 )
 
 TOPK_KEYS = ["moe_topk", "num_experts_per_tok", "top_k"]
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Expert index mapping
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_expert_target_map(
-    original_experts: int,
-    target_experts: int,
-) -> dict[int, list[int]]:
-    """Build source expert -> list of new expert indices for duplication."""
-    targets: dict[int, list[int]] = defaultdict(list)
-    for new_idx in range(original_experts, target_experts):
-        src_idx = new_idx % original_experts
-        targets[src_idx].append(new_idx)
-    return dict(targets)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -177,53 +164,6 @@ def describe_config_diff(old: dict, new: dict):
 # Tensor expansion
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def expand_router_weight(
-    tensor: torch.Tensor,
-    original_experts: int,
-    zero_expert_num: int,
-    expansion_factor: int,
-    router_noise_scale: float = 0.0,
-) -> torch.Tensor:
-    """Expand a router classifier/gate weight with optional noise on copies.
-
-    Layout: [real_experts * expansion_factor, zero_experts * expansion_factor]
-
-    When router_noise_scale > 0, duplicated blocks get small Gaussian noise to
-    break symmetry so that fine-tuning can differentiate them.
-    """
-    if zero_expert_num > 0:
-        real_part = tensor[:original_experts]
-        zero_part = tensor[original_experts:]
-    else:
-        real_part = tensor
-        zero_part = None
-
-    real_blocks = [real_part]
-    for _ in range(1, expansion_factor):
-        if router_noise_scale > 0:
-            noise = torch.randn_like(real_part) * router_noise_scale * real_part.std()
-            real_blocks.append(real_part + noise)
-        else:
-            real_blocks.append(real_part)
-    expanded_real = torch.cat(real_blocks, dim=0)
-
-    if zero_part is not None:
-        expanded_zero = torch.cat([zero_part] * expansion_factor, dim=0)
-        return torch.cat([expanded_real, expanded_zero], dim=0)
-    else:
-        return expanded_real
-
-
-def expand_router_bias(
-    tensor: torch.Tensor,
-    original_experts: int,
-    zero_expert_num: int,
-    expansion_factor: int,
-) -> torch.Tensor:
-    """Expand a router score correction bias (exact copies, no noise)."""
-    return expand_router_weight(tensor, original_experts, zero_expert_num, expansion_factor, router_noise_scale=0.0)
-
-
 def _expand_tensor(
     key: str,
     tensor: torch.Tensor,
@@ -252,7 +192,7 @@ def _expand_tensor(
         layer_idx, expert_idx, rest = info
         result: dict[str, torch.Tensor] = {}
         if expert_idx < original_experts:
-            result[key] = tensor
+            result[key] = tensor.clone()
             for new_expert_idx in source_to_targets.get(expert_idx, []):
                 new_key = make_expert_key(layer_idx, new_expert_idx, rest)
                 if expert_noise_scale > 0:
@@ -263,7 +203,7 @@ def _expand_tensor(
         else:
             base_new_idx = expert_idx - original_experts + target_experts
             new_key = make_expert_key(layer_idx, base_new_idx, rest)
-            result[new_key] = tensor
+            result[new_key] = tensor.clone()
             zero_offset = expert_idx - original_experts
             for f in range(1, expansion_factor):
                 copy_idx = target_experts + zero_offset + f * zero_expert_num
@@ -287,6 +227,7 @@ def plan_output_layout(
     target_experts: int,
     expansion_factor: int,
     source_to_targets: dict[int, list[int]],
+    expert_noise_scale: float = 0.0,
 ) -> tuple[int, int, int, int]:
     """Scan all shard headers to determine the number of output shards needed.
 
@@ -310,13 +251,14 @@ def plan_output_layout(
             for _, output_nbytes, action in _expand_tensor_meta(
                 key, dtype, shape, original_experts, zero_expert_num,
                 total_routed, expansion_factor, source_to_targets, target_experts,
+                expert_noise_scale,
             ):
                 if output_nbytes + current_bytes > target_shard_size and current_bytes > 0:
                     num_output_shards += 1
                     current_bytes = 0
                 current_bytes += output_nbytes
                 total_output_bytes += output_nbytes
-                if action in ("clone", "clone_exact"):
+                if action in ("clone", "clone_expert", "clone_exact"):
                     total_duplicated += 1
                 else:
                     total_original += 1
@@ -332,11 +274,14 @@ def _expand_tensor_meta(key: str, dtype: str, shape: list[int],
                         original_experts: int, zero_expert_num: int,
                         total_routed: int, expansion_factor: int,
                         source_to_targets: dict[int, list[int]],
-                        target_experts: int) -> list[tuple[str, int, str]]:
+                        target_experts: int,
+                        expert_noise_scale: float = 0.0) -> list[tuple[str, int, str]]:
     """Return list of (output_key, output_nbytes, action) for an input tensor.
 
-    action is one of: "keep", "clone", "clone_exact", "router_weight", "router_bias"
-    - "clone": routed expert copy (may receive expert noise)
+    action is one of: "keep", "clone", "clone_expert", "clone_exact",
+                       "router_weight", "router_bias"
+    - "clone": non-expert copy (always exact, no noise)
+    - "clone_expert": routed expert copy (may receive expert noise)
     - "clone_exact": zero expert copy (always exact, no noise)
     Mirrors the actual expansion logic but operates on metadata only.
     """
@@ -361,7 +306,8 @@ def _expand_tensor_meta(key: str, dtype: str, shape: list[int],
             results.append((key, nbytes, "keep"))
             for new_expert_idx in source_to_targets.get(expert_idx, []):
                 new_key = make_expert_key(layer_idx, new_expert_idx, rest)
-                results.append((new_key, nbytes, "clone"))
+                tag = "clone_expert" if expert_noise_scale > 0 else "clone"
+                results.append((new_key, nbytes, tag))
         else:
             base_new_idx = expert_idx - original_experts + target_experts
             new_key = make_expert_key(layer_idx, base_new_idx, rest)
@@ -386,6 +332,7 @@ def _pre_scan_assignments(
     expansion_factor: int,
     source_to_targets: dict[int, list[int]],
     target_experts: int,
+    expert_noise_scale: float = 0.0,
 ) -> tuple[dict[int, list[tuple[str, str, str, str]]], int, int, int, int]:
     """Pre-scan all shard headers and assign each output tensor to an output shard.
 
@@ -411,6 +358,7 @@ def _pre_scan_assignments(
             for output_key, output_nbytes, action in _expand_tensor_meta(
                 key, dtype, shape, original_experts, zero_expert_num,
                 total_routed, expansion_factor, source_to_targets, target_experts,
+                expert_noise_scale,
             ):
                 if current_bytes + output_nbytes > target_shard_size and current_bytes > 0:
                     current_shard += 1
@@ -419,7 +367,7 @@ def _pre_scan_assignments(
                     (shard_file, key, output_key, action))
                 current_bytes += output_nbytes
                 total_output_bytes += output_nbytes
-                if action in ("clone", "clone_exact"):
+                if action in ("clone", "clone_expert", "clone_exact"):
                     total_duplicated += 1
                 else:
                     total_original += 1
@@ -458,6 +406,8 @@ def _write_output_shard(args):
                     if action == "keep":
                         tensors[out_key] = tensor
                     elif action == "clone":
+                        tensors[out_key] = tensor.clone()
+                    elif action == "clone_expert":
                         if expert_noise_scale > 0:
                             noise = torch.randn_like(tensor) * expert_noise_scale * tensor.std()
                             tensors[out_key] = tensor + noise
@@ -613,7 +563,7 @@ def main():
          total_original, total_duplicated) = _pre_scan_assignments(
             model_dir, shard_files, target_shard_size,
             original_experts, zero_expert_num, expansion_factor,
-            source_to_targets, target_experts,
+            source_to_targets, target_experts, args.expert_noise_scale,
         )
 
         print(
@@ -658,7 +608,7 @@ def main():
         num_output_shards, total_output_bytes, total_original, total_duplicated = plan_output_layout(
             model_dir, shard_files, target_shard_size,
             original_experts, zero_expert_num, target_experts,
-            expansion_factor, source_to_targets,
+            expansion_factor, source_to_targets, args.expert_noise_scale,
         )
 
         print(

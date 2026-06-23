@@ -289,7 +289,7 @@ def main():
         print("ERROR: Cannot determine original layer count. Use --original_layers.", file=sys.stderr)
         sys.exit(1)
 
-    target_layers = args.target_layers if args.target_layers else original_layers * 2
+    target_layers = args.target_layers if args.target_layers is not None else original_layers * 2
     num_new = target_layers - original_layers
 
     if num_new <= 0:
@@ -496,8 +496,10 @@ def main():
             sname,
         )
 
+    metadata = {**index.get("metadata", {})}
+    metadata["total_size"] = total_output_bytes
     new_index = {
-        "metadata": {"total_size": total_output_bytes},
+        "metadata": metadata,
         "weight_map": fixed_weight_map,
     }
     with open(output_dir / "model.safetensors.index.json", "w") as f:
