@@ -434,7 +434,7 @@ def pre_scan_assignments(
                     (shard_file, key, output_key, action))
                 current_bytes += output_nbytes
                 total_output_bytes += output_nbytes
-                if action in ("clone", "clone_expert", "router_weight", "router_bias"):
+                if action in ("clone", "clone_expert", "router_weight", "router_bias", "zero"):
                     total_duplicated += 1
                 else:
                     total_original += 1
@@ -720,6 +720,10 @@ def main():
             target_experts=target_experts,
             expert_noise_scale=args.expert_noise_scale,
         )
+        zeroed_count = sum(
+            1 for items in assignments_by_shard.values()
+            for _, _, out_key, action in items if action == "zero"
+        )
         print(f"Output: {total_original:,} original + {total_duplicated:,} expanded "
               f"= {total_original + total_duplicated:,} tensors "
               f"({total_output_bytes / 1e9:.2f} GB in {num_output_shards} shards)")
@@ -821,7 +825,8 @@ def main():
                         maybe_flush(nbytes)
                         current_tensors[out_key] = expanded
                         current_bytes += nbytes
-                        if expanded.sum() == 0:
+                        out_layer = get_layer_index(out_key)
+                        if out_layer in new_layer_set and should_zero(out_key):
                             zeroed_count += 1
 
         flush_shard()

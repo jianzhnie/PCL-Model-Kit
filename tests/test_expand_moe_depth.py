@@ -10,7 +10,6 @@ import torch
 from safetensors.torch import load_file, save_file
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPT_PATH = REPO_ROOT / "utils" / "expand_moe_depth.py"
 
 sys.path.insert(0, str(REPO_ROOT))
 from utils.expand_moe_depth import build_layer_mapping, should_zero
@@ -126,7 +125,7 @@ def _run_expansion(model_dir: Path, output_dir: Path, num_layers: int,
                    target_layers: int, mode: str, **extra) -> subprocess.CompletedProcess:
     """Run expand_moe_depth.py via subprocess."""
     cmd = [
-        sys.executable, str(SCRIPT_PATH),
+        sys.executable, "-m", "utils.expand_moe_depth",
         "--model_dir", str(model_dir),
         "--output_dir", str(output_dir),
         "--original_layers", str(num_layers),

@@ -358,6 +358,10 @@ def main():
             model_dir, shard_files, target_size_bytes,
             remap, orig_to_new, new_layer_set,
         )
+        zeroed_count = sum(
+            1 for items in assignments_by_shard.values()
+            for _, _, out_key, action in items if action == "zero"
+        )
         print(f"Output: {total_original:,} original + {total_duplicated:,} expanded "
               f"= {total_original + total_duplicated:,} tensors "
               f"({total_output_bytes / 1e9:.2f} GB in {num_output_shards} shards)")
