@@ -38,6 +38,7 @@ from tqdm import tqdm
 
 from utils.shared import (
     auto_detect_shard_size,
+    build_layer_mapping,
     get_layer_index,
     get_nbytes_from_meta,
     load_config,
@@ -176,48 +177,6 @@ def _write_output_shard(args):
     except Exception as e:
         raise RuntimeError(f"Failed to write {output_path.name}: {e}") from e
     return [(name, output_path.name) for name in tensors]
-
-
-def build_layer_mapping(
-    original_layers: int,
-    target_layers: int,
-    source_list: list[int],
-    insertion_mode: str,
-) -> list[tuple[int, bool]]:
-    """Build the final layer ordering as (source_layer, is_new).
-
-    Returns a list of length target_layers where each entry indicates
-    which original layer it comes from and whether it's a new identity layer.
-
-    insertion_mode:
-      - "interleave": insert new identity layers after their source layer
-      - "append": original layers first, then new layers at the end
-    """
-    num_new = target_layers - original_layers
-
-    if insertion_mode == "append":
-        mapping = [(i, False) for i in range(original_layers)]
-        for offset in range(num_new):
-            mapping.append((source_list[offset], True))
-        return mapping
-
-    new_by_source: dict[int, int] = defaultdict(int)
-    for src in source_list:
-        new_by_source[src] += 1
-
-    mapping = []
-    for orig_idx in range(original_layers):
-        mapping.append((orig_idx, False))
-        count = new_by_source.get(orig_idx, 0)
-        for _ in range(count):
-            mapping.append((orig_idx, True))
-
-    assert len(mapping) == target_layers, (
-        f"Interleave mapping length {len(mapping)} != target {target_layers}. "
-        f"This can happen if source_list references layers not in [0, original_layers). "
-        f"source_list sources: {sorted(set(source_list))}"
-    )
-    return mapping
 
 
 def validate_layer_layout(index: dict, original_layers: int) -> list[int]:

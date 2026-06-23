@@ -39,6 +39,7 @@ from utils.shared import (
     EXPERT_COUNT_KEYS,
     auto_detect_shard_size,
     build_expert_target_map,
+    build_layer_mapping,
     expand_router_bias,
     expand_router_weight,
     find_expert_count,
@@ -70,40 +71,6 @@ def should_zero(param_name: str) -> bool:
             return True
     return False
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Depth mapping
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_layer_mapping(
-    original_layers: int,
-    target_layers: int,
-    source_list: list[int],
-    insertion_mode: str,
-) -> list[tuple[int, bool]]:
-    """Build (source_layer, is_new) for each target layer position."""
-    num_new = target_layers - original_layers
-
-    if insertion_mode == "append":
-        mapping = [(i, False) for i in range(original_layers)]
-        for offset in range(num_new):
-            mapping.append((source_list[offset], True))
-        return mapping
-
-    new_by_source: dict[int, int] = defaultdict(int)
-    for src in source_list:
-        new_by_source[src] += 1
-
-    mapping = []
-    for orig_idx in range(original_layers):
-        mapping.append((orig_idx, False))
-        for _ in range(new_by_source.get(orig_idx, 0)):
-            mapping.append((orig_idx, True))
-
-    assert len(mapping) == target_layers, (
-        f"Interleave mapping length {len(mapping)} != target {target_layers}"
-    )
-    return mapping
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

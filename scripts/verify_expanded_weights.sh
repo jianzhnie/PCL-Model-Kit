@@ -5,15 +5,19 @@
 #   bash scripts/verify_expanded_weights.sh [type] [orig_dir] [exp_dir] [args...]
 #
 # Expansion Types:
-#   layers  - Verify model depth expansion (requires --orig_layers, --target_layers)
-#   experts - Verify MoE expert expansion
+#   layers   - Verify model depth expansion (requires --orig_layers, --target_layers)
+#   experts  - Verify MoE expert expansion
+#   combined - Verify combined depth + expert expansion (requires --orig_layers, --target_layers)
 #
 # Examples:
-#   # Verify 28 -> 56 layer expansion
-#   bash scripts/verify_expanded_weights.sh layers /path/to/orig /path/to/exp --orig_layers 28 --target_layers 56
+#   # Verify 14 -> 28 layer expansion (interleave)
+#   bash scripts/verify_expanded_weights.sh layers /path/to/orig /path/to/exp --orig_layers 14 --target_layers 28 --insertion_mode interleave
 #
 #   # Verify MoE expert expansion
 #   bash scripts/verify_expanded_weights.sh experts /path/to/orig /path/to/exp
+#
+#   # Verify combined depth + expert expansion
+#   bash scripts/verify_expanded_weights.sh combined /path/to/orig /path/to/exp --orig_layers 14 --target_layers 18 --insertion_mode interleave
 
 set -euo pipefail
 
