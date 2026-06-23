@@ -1,0 +1,213 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 680" font-family="system-ui,-apple-system,sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#64748B"/></marker>
+    <marker id="ag" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#10B981"/></marker>
+    <marker id="ao" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#EA580C"/></marker>
+    <marker id="ap" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6Z" fill="#7C3AED"/></marker>
+    <linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFF7ED"/><stop offset="100%" stop-color="#FFEDD5"/></linearGradient>
+    <filter id="sh"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity=".08"/></filter>
+    <filter id="shl"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-opacity=".12"/></filter>
+  </defs>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- Title                                                                  -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <text x="450" y="32" text-anchor="middle" font-size="18" font-weight="700" fill="#0F172A">Combined Expansion: M2 (Depth) → M1 (Expert Upcycling)</text>
+  <line x1="140" y1="44" x2="760" y2="44" stroke="#CBD5E1"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- Section 1: Original Model                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <text x="450" y="72" text-anchor="middle" font-size="14" font-weight="700" fill="#0F172A">Original MoE Model</text>
+  <text x="450" y="92" text-anchor="middle" font-size="11" fill="#64748B">N layers, each with E routed experts + optional zero experts</text>
+
+  <!-- Layer stack -->
+  <g transform="translate(50, 108)">
+    <!-- L0 -->
+    <rect x="0" y="0" width="130" height="38" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5" filter="url(#sh)"/>
+    <text x="65" y="24" text-anchor="middle" font-size="11" font-weight="700" fill="#1E40AF">Layer 0</text>
+    <!-- L1 -->
+    <rect x="0" y="46" width="130" height="38" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5" filter="url(#sh)"/>
+    <text x="65" y="70" text-anchor="middle" font-size="11" font-weight="700" fill="#1E40AF">Layer 1</text>
+    <!-- L2 -->
+    <rect x="0" y="92" width="130" height="38" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5" filter="url(#sh)"/>
+    <text x="65" y="116" text-anchor="middle" font-size="11" font-weight="700" fill="#1E40AF">Layer 2</text>
+    <!-- dots -->
+    <text x="65" y="152" text-anchor="middle" font-size="16" fill="#94A3B8">···</text>
+    <!-- LN-1 -->
+    <rect x="0" y="170" width="130" height="38" rx="6" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5" filter="url(#sh)"/>
+    <text x="65" y="194" text-anchor="middle" font-size="11" font-weight="700" fill="#1E40AF">Layer N−1</text>
+    <text x="65" y="225" text-anchor="middle" font-size="10" fill="#64748B">N layers</text>
+  </g>
+
+  <!-- Arrow to detail -->
+  <line x1="185" y1="147" x2="220" y2="147" stroke="#64748B" stroke-width="1.5" marker-end="url(#ah)"/>
+
+  <!-- Single layer detail -->
+  <g transform="translate(230, 108)">
+    <rect x="0" y="0" width="400" height="120" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="200" y="20" text-anchor="middle" font-size="10" font-weight="600" fill="#64748B">Inside One Layer</text>
+
+    <!-- Attention -->
+    <rect x="15" y="30" width="110" height="24" rx="4" fill="#EFF6FF" stroke="#93C5FD"/>
+    <text x="70" y="46" text-anchor="middle" font-size="9" fill="#1E40AF" font-weight="600">Self-Attention</text>
+
+    <!-- MoE FFN -->
+    <rect x="145" y="30" width="240" height="82" rx="6" fill="#F5F3FF" stroke="#C4B5FD" stroke-dasharray="4,2"/>
+    <text x="265" y="44" text-anchor="middle" font-size="9" fill="#7C3AED" font-weight="600">MoE FFN</text>
+
+    <rect x="155" y="52" width="70" height="20" rx="3" fill="#EDE9FE" stroke="#A78BFA"/>
+    <text x="190" y="66" text-anchor="middle" font-size="8" fill="#5B21B6">Router [E×d]</text>
+
+    <!-- Experts mini -->
+    <rect x="235" y="52" width="28" height="20" rx="3" fill="#3B82F6"/>
+    <text x="249" y="66" text-anchor="middle" font-size="7" fill="#fff" font-weight="600">E₀</text>
+    <rect x="266" y="52" width="20" height="20" rx="3" fill="#DBEAFE" stroke="#93C5FD" stroke-width=".5"/>
+    <text x="276" y="66" text-anchor="middle" font-size="7" fill="#6B7280">E₁</text>
+    <text x="296" y="66" font-size="9" fill="#94A3B8">···</text>
+    <rect x="316" y="52" width="20" height="20" rx="3" fill="#3B82F6"/>
+    <text x="326" y="66" text-anchor="middle" font-size="6" fill="#fff" font-weight="600">Ek</text>
+    <text x="345" y="66" font-size="9" fill="#94A3B8">···</text>
+
+    <rect x="155" y="78" width="60" height="20" rx="3" fill="#F1F5F9" stroke="#CBD5E1"/>
+    <text x="185" y="92" text-anchor="middle" font-size="8" fill="#64748B">E experts</text>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- Arrow down to Step 1                                                   -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <line x1="450" y1="236" x2="450" y2="260" stroke="#64748B" stroke-width="2" marker-end="url(#ah)"/>
+  <rect x="370" y="244" width="160" height="22" rx="11" fill="#EA580C"/>
+  <text x="450" y="259" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Step 1: M2 Depth</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- Section 2: After Depth Expansion                                        -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <text x="450" y="290" text-anchor="middle" font-size="14" font-weight="700" fill="#0F172A">After M2: Depth Expansion (+4 Identity Layers)</text>
+  <text x="450" y="308" text-anchor="middle" font-size="11" fill="#64748B">Interleave mode — each new layer copies weights from its source, then zeros o_proj + down_proj</text>
+
+  <!-- Expanded layer stack -->
+  <g transform="translate(30, 322)">
+    <rect x="0" y="0" width="110" height="30" rx="5" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="55" y="20" text-anchor="middle" font-size="10" font-weight="700" fill="#1E40AF">L0</text>
+
+    <rect x="118" y="0" width="110" height="30" rx="5" fill="url(#ig)" stroke="#F97316" stroke-width="1.5"/>
+    <text x="173" y="20" text-anchor="middle" font-size="10" font-weight="700" fill="#C2410C">ID₀</text>
+    <text x="173" y="44" text-anchor="middle" font-size="7" fill="#EA580C">← copy L0</text>
+
+    <rect x="236" y="0" width="110" height="30" rx="5" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="291" y="20" text-anchor="middle" font-size="10" font-weight="700" fill="#1E40AF">L1</text>
+
+    <rect x="354" y="0" width="110" height="30" rx="5" fill="url(#ig)" stroke="#F97316" stroke-width="1.5"/>
+    <text x="409" y="20" text-anchor="middle" font-size="10" font-weight="700" fill="#C2410C">ID₁</text>
+    <text x="409" y="44" text-anchor="middle" font-size="7" fill="#EA580C">← copy L1</text>
+
+    <rect x="472" y="0" width="110" height="30" rx="5" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="527" y="20" text-anchor="middle" font-size="10" font-weight="700" fill="#1E40AF">L2</text>
+
+    <text x="600" y="20" font-size="14" fill="#94A3B8">···</text>
+
+    <rect x="630" y="0" width="110" height="30" rx="5" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="685" y="20" text-anchor="middle" font-size="10" font-weight="700" fill="#1E40AF">LN−1</text>
+
+    <rect x="748" y="0" width="110" height="30" rx="5" fill="url(#ig)" stroke="#F97316" stroke-width="1.5"/>
+    <text x="803" y="20" text-anchor="middle" font-size="10" font-weight="700" fill="#C2410C">ID₃</text>
+    <text x="803" y="44" text-anchor="middle" font-size="7" fill="#EA580C">← copy LN−1</text>
+
+    <text x="420" y="68" text-anchor="middle" font-size="10" fill="#64748B">N + 4 layers (4 new identity layers interleaved)</text>
+  </g>
+
+  <!-- Identity block detail callout -->
+  <g transform="translate(50, 400)">
+    <rect x="0" y="0" width="800" height="80" rx="10" fill="#FFF7ED" stroke="#FDBA74" stroke-width="1.2"/>
+    <text x="400" y="18" text-anchor="middle" font-size="10" font-weight="700" fill="#C2410C">Identity Block Mechanism (IDₓ)</text>
+
+    <rect x="20" y="28" width="120" height="20" rx="4" fill="#FEE2E2" stroke="#EF4444" stroke-width="1.2"/>
+    <text x="80" y="42" text-anchor="middle" font-size="9" font-weight="700" fill="#DC2626">o_proj = 0</text>
+    <text x="155" y="42" font-size="9" fill="#64748B">→ attention output zeroed, residual passes through: x + 0 = x</text>
+
+    <rect x="20" y="52" width="120" height="20" rx="4" fill="#FEE2E2" stroke="#EF4444" stroke-width="1.2"/>
+    <text x="80" y="66" text-anchor="middle" font-size="9" font-weight="700" fill="#DC2626">down_proj = 0</text>
+    <text x="155" y="66" font-size="9" fill="#64748B">→ FFN output zeroed, residual passes through: x + 0 = x</text>
+
+    <rect x="540" y="28" width="65" height="20" rx="4" fill="#D1FAE5" stroke="#10B981" stroke-width="1.2"/>
+    <text x="572" y="42" text-anchor="middle" font-size="9" font-weight="700" fill="#047857">✓ FP</text>
+    <rect x="540" y="52" width="65" height="20" rx="4" fill="#D1FAE5" stroke="#10B981" stroke-width="1.2"/>
+    <text x="572" y="66" text-anchor="middle" font-size="9" font-weight="700" fill="#047857">✓ FP</text>
+    <text x="620" y="42" font-size="9" fill="#059669">Function-preserving</text>
+    <text x="620" y="66" font-size="9" fill="#059669">at initialization</text>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- Arrow down to Step 2                                                   -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <line x1="450" y1="488" x2="450" y2="512" stroke="#64748B" stroke-width="2" marker-end="url(#ah)"/>
+  <rect x="360" y="496" width="180" height="22" rx="11" fill="#7C3AED"/>
+  <text x="450" y="511" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Step 2: M1 Expert Upcycling</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- Section 3: After Expert Expansion                                       -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <text x="450" y="542" text-anchor="middle" font-size="14" font-weight="700" fill="#0F172A">After M1: Expert Expansion (×2) — Applied to ALL Layers</text>
+  <text x="450" y="560" text-anchor="middle" font-size="11" fill="#64748B">Each expert duplicated once, router weight expanded from [E] to [2E], Top-K unchanged</text>
+
+  <!-- Layer showing expanded experts -->
+  <g transform="translate(60, 576)">
+    <rect x="0" y="0" width="780" height="82" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+
+    <!-- Layer label -->
+    <rect x="10" y="10" width="60" height="22" rx="4" fill="#DBEAFE" stroke="#3B82F6"/>
+    <text x="40" y="25" text-anchor="middle" font-size="9" font-weight="700" fill="#1E40AF">Layer k</text>
+
+    <!-- Router expanded -->
+    <rect x="85" y="8" width="130" height="26" rx="4" fill="#EDE9FE" stroke="#A78BFA"/>
+    <text x="150" y="21" text-anchor="middle" font-size="8" fill="#5B21B6" font-weight="600">Router</text>
+    <text x="150" y="32" text-anchor="middle" font-size="7" fill="#7C3AED">[2E × d] expanded</text>
+
+    <!-- Original expert -->
+    <rect x="230" y="8" width="80" height="26" rx="4" fill="#3B82F6"/>
+    <text x="270" y="21" text-anchor="middle" font-size="8" fill="#fff" font-weight="600">Expert 0</text>
+    <text x="270" y="32" text-anchor="middle" font-size="7" fill="#BFDBFE">keep</text>
+
+    <!-- Copied expert -->
+    <rect x="316" y="8" width="80" height="26" rx="4" fill="url(#ig)" stroke="#F97316" stroke-width="1.2"/>
+    <text x="356" y="21" text-anchor="middle" font-size="8" fill="#C2410C" font-weight="600">Expert 0'</text>
+    <text x="356" y="32" text-anchor="middle" font-size="7" fill="#EA580C">copy ± ε</text>
+
+    <!-- Divider -->
+    <line x1="405" y1="8" x2="405" y2="38" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="3,3"/>
+
+    <!-- Expert 1 pair -->
+    <rect x="415" y="8" width="80" height="26" rx="4" fill="#DBEAFE" stroke="#93C5FD"/>
+    <text x="455" y="21" text-anchor="middle" font-size="8" fill="#1E40AF" font-weight="600">Expert 1</text>
+    <text x="455" y="32" text-anchor="middle" font-size="7" fill="#64748B">keep</text>
+
+    <rect x="501" y="8" width="80" height="26" rx="4" fill="url(#ig)" stroke="#F97316" stroke-width="1.2"/>
+    <text x="541" y="21" text-anchor="middle" font-size="8" fill="#C2410C" font-weight="600">Expert 1'</text>
+    <text x="541" y="32" text-anchor="middle" font-size="7" fill="#EA580C">copy ± ε</text>
+
+    <text x="600" y="24" font-size="14" fill="#94A3B8">···</text>
+
+    <rect x="625" y="8" width="80" height="26" rx="4" fill="#3B82F6"/>
+    <text x="665" y="21" text-anchor="middle" font-size="7" fill="#fff" font-weight="600">Exp E−1</text>
+    <text x="665" y="32" text-anchor="middle" font-size="7" fill="#BFDBFE">keep</text>
+
+    <rect x="711" y="8" width="55" height="26" rx="4" fill="url(#ig)" stroke="#F97316" stroke-width="1.2"/>
+    <text x="738" y="21" text-anchor="middle" font-size="7" fill="#C2410C" font-weight="600">E−1'</text>
+    <text x="738" y="32" text-anchor="middle" font-size="6" fill="#EA580C">copy</text>
+
+    <!-- Key callout -->
+    <rect x="85" y="46" width="12" height="10" rx="2" fill="#3B82F6"/>
+    <text x="102" y="55" font-size="8" fill="#475569">Original expert (kept)</text>
+    <rect x="230" y="46" width="12" height="10" rx="2" fill="url(#ig)" stroke="#F97316" stroke-width=".8"/>
+    <text x="247" y="55" font-size="8" fill="#475569">Copied expert (+ optional noise ε to break symmetry)</text>
+    <rect x="460" y="46" width="12" height="10" rx="2" fill="#EDE9FE" stroke="#A78BFA" stroke-width=".8"/>
+    <text x="477" y="55" font-size="8" fill="#475569">Expanded router weight [2E × d]</text>
+
+    <text x="720" y="72" text-anchor="middle" font-size="9" fill="#64748B">2E experts total</text>
+  </g>
+
+  <text x="450" y="674" text-anchor="middle" font-size="11" fill="#475569">
+    2E experts per layer × (N+4) layers  ·  Inference FLOPs ≈ same per token  ·  Total params ≈ 2×(N+4)/N × original
+  </text>
+</svg>

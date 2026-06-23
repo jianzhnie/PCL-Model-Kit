@@ -28,6 +28,7 @@ import re
 import shutil
 import sys
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import torch
@@ -61,6 +62,120 @@ def should_zero(param_name: str) -> bool:
         if pat.search(param_name):
             return True
     return False
+
+
+def expand_tensor_meta(
+    key: str,
+    dtype: str,
+    shape: list[int],
+    remap: dict[int, int],
+    orig_to_new: dict[int, list[int]],
+    new_layer_set: set[int],
+) -> list[tuple[str, int, str]]:
+    """Return [(output_key, output_nbytes, action), ...] for a tensor.
+
+    Mirrors the Pass 2 expansion logic but operates on metadata only.
+    action: "keep" | "clone" | "zero"
+    """
+    nbytes = get_nbytes_from_meta(dtype, shape)
+    layer_idx = get_layer_index(key)
+
+    if layer_idx is None:
+        return [(key, nbytes, "keep")]
+
+    results: list[tuple[str, int, str]] = []
+    remapped_idx = remap.get(layer_idx, layer_idx)
+    results.append((set_layer_index(key, remapped_idx), nbytes, "keep"))
+
+    for target_idx in orig_to_new.get(layer_idx, []):
+        dup_key = set_layer_index(key, target_idx)
+        if target_idx in new_layer_set and should_zero(dup_key):
+            results.append((dup_key, nbytes, "zero"))
+        else:
+            results.append((dup_key, nbytes, "clone"))
+
+    return results
+
+
+def pre_scan_assignments(
+    model_dir: Path,
+    shard_files: list[str],
+    target_shard_size: int,
+    remap: dict[int, int],
+    orig_to_new: dict[int, list[int]],
+    new_layer_set: set[int],
+) -> tuple[dict[int, list[tuple[str, str, str, str]]], int, int, int, int]:
+    """Scan all shard headers and assign each output tensor to an output shard.
+
+    Returns (assignments, num_output_shards, total_output_bytes,
+             total_original, total_duplicated).
+    """
+    current_shard = 0
+    current_bytes = 0
+    total_output_bytes = 0
+    total_original = 0
+    total_duplicated = 0
+    assignments: dict[int, list[tuple[str, str, str, str]]] = defaultdict(list)
+
+    for shard_file in tqdm(shard_files, desc="Pre-scanning"):
+        shard_path = model_dir / shard_file
+        if not shard_path.exists():
+            tqdm.write(f"  WARNING: {shard_file} not found — skipping")
+            continue
+        header = read_safetensors_header(shard_path)
+        for key, (dtype, shape) in header.items():
+            for output_key, output_nbytes, action in expand_tensor_meta(
+                key, dtype, shape, remap, orig_to_new, new_layer_set,
+            ):
+                if current_bytes + output_nbytes > target_shard_size and current_bytes > 0:
+                    current_shard += 1
+                    current_bytes = 0
+                assignments[current_shard].append(
+                    (shard_file, key, output_key, action))
+                current_bytes += output_nbytes
+                total_output_bytes += output_nbytes
+                if action in ("clone", "zero"):
+                    total_duplicated += 1
+                else:
+                    total_original += 1
+
+    num_output_shards = current_shard + 1 if assignments else 0
+    return dict(assignments), num_output_shards, total_output_bytes, total_original, total_duplicated
+
+
+def _write_output_shard(args):
+    """Worker for ProcessPoolExecutor. Writes a single output shard.
+
+    args: (output_path, assignments, model_dir_str)
+      assignments: list of (input_shard, input_key, output_key, action)
+    """
+    output_path, assignments, model_dir_str = args
+    model_dir = Path(model_dir_str)
+
+    by_input: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    for sfile, in_key, out_key, action in assignments:
+        by_input[sfile].append((in_key, out_key, action))
+
+    tensors: dict[str, torch.Tensor] = {}
+    try:
+        for sfile, items in by_input.items():
+            with safe_open(str(model_dir / sfile), framework="pt", device="cpu") as sf:
+                tensor_cache: dict[str, torch.Tensor] = {}
+                for in_key, out_key, action in items:
+                    if in_key not in tensor_cache:
+                        tensor_cache[in_key] = sf.get_tensor(in_key)
+                    tensor = tensor_cache[in_key]
+
+                    if action == "keep":
+                        tensors[out_key] = tensor
+                    elif action == "clone":
+                        tensors[out_key] = tensor.clone()
+                    elif action == "zero":
+                        tensors[out_key] = torch.zeros_like(tensor)
+        save_file(tensors, str(output_path))
+    except Exception as e:
+        raise RuntimeError(f"Failed to write {output_path.name}: {e}") from e
+    return [(name, output_path.name) for name in tensors]
 
 
 def build_layer_mapping(
@@ -145,6 +260,9 @@ def main():
     parser.add_argument("--insertion_mode", choices=["interleave", "append"],
                         default="interleave",
                         help="How to arrange new layers: interleave after source or append at end")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of worker processes for parallel output shard "
+                             "writing (default 1 = serial; use 0 for CPU count)")
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -213,123 +331,159 @@ def main():
         json.dump(updated_config, f, indent=2, ensure_ascii=False)
     print("Config written.")
 
+    # ── Build target index mappings ───────────────────────────────────────
     orig_to_new: dict[int, list[int]] = defaultdict(list)
     new_layer_set: set[int] = set()
+    remap: dict[int, int] = {}
     for new_idx, (src, is_new) in enumerate(layer_mapping):
         if is_new:
             orig_to_new[src].append(new_idx)
             new_layer_set.add(new_idx)
+        else:
+            remap[src] = new_idx
 
     target_size_bytes = auto_detect_shard_size(model_dir, shard_files)
     print(f"Target shard size: {target_size_bytes / 1e9:.2f} GB")
 
-    print("\nPass 1/2: Scanning headers...")
-    num_output_shards = 1
-    current_bytes = 0
-    total_output_bytes = 0
+    workers = args.workers if args.workers > 0 else (__import__("os").cpu_count() or 4)
+    new_weight_map: dict[str, str] = {}
+    zeroed_count = 0
 
-    for shard_file in tqdm(shard_files, desc="Scanning"):
-        shard_path = model_dir / shard_file
-        if not shard_path.exists():
-            continue
-        header = read_safetensors_header(shard_path)
-        for key, (dtype, shape) in header.items():
-            nbytes = get_nbytes_from_meta(dtype, shape)
-            layer_idx = get_layer_index(key)
+    # ── Process ──────────────────────────────────────────────────────────
+    if workers > 1:
+        print(f"\nParallel mode: {workers} workers")
+        print("Pass 1/2: Scanning headers and assigning to output shards...")
+        (assignments_by_shard, num_output_shards, total_output_bytes,
+         total_original, total_duplicated) = pre_scan_assignments(
+            model_dir, shard_files, target_size_bytes,
+            remap, orig_to_new, new_layer_set,
+        )
+        print(f"Output: {total_original:,} original + {total_duplicated:,} expanded "
+              f"= {total_original + total_duplicated:,} tensors "
+              f"({total_output_bytes / 1e9:.2f} GB in {num_output_shards} shards)")
 
-            if layer_idx is not None:
-                for target_idx in [layer_idx] + orig_to_new.get(layer_idx, []):
-                    if target_idx == layer_idx and layer_idx >= original_layers:
-                        continue
+        print("Pass 2/2: Writing output shards...")
+        tasks = []
+        for shard_idx in sorted(assignments_by_shard):
+            shard_name = f"model-{shard_idx + 1:05d}-of-{num_output_shards:05d}.safetensors"
+            output_path = output_dir / shard_name
+            tasks.append((
+                output_path,
+                assignments_by_shard[shard_idx],
+                str(model_dir),
+            ))
+
+        chunksize = max(1, len(tasks) // workers)
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = list(tqdm(
+                executor.map(_write_output_shard, tasks, chunksize=chunksize),
+                total=len(tasks),
+                desc="Writing shards",
+            ))
+            for weight_entries in futures:
+                for name, shard_name in weight_entries:
+                    new_weight_map[name] = shard_name
+    else:
+        print("\nPass 1/2: Scanning headers...")
+        num_output_shards = 1
+        current_bytes = 0
+        total_output_bytes = 0
+
+        for shard_file in tqdm(shard_files, desc="Scanning"):
+            shard_path = model_dir / shard_file
+            if not shard_path.exists():
+                continue
+            header = read_safetensors_header(shard_path)
+            for key, (dtype, shape) in header.items():
+                nbytes = get_nbytes_from_meta(dtype, shape)
+                layer_idx = get_layer_index(key)
+
+                if layer_idx is not None:
+                    remapped_idx = remap.get(layer_idx, layer_idx)
+                    for target_idx in [remapped_idx] + orig_to_new.get(layer_idx, []):
+                        if nbytes + current_bytes > target_size_bytes and current_bytes > 0:
+                            num_output_shards += 1
+                            current_bytes = 0
+                        current_bytes += nbytes
+                        total_output_bytes += nbytes
+                else:
                     if nbytes + current_bytes > target_size_bytes and current_bytes > 0:
                         num_output_shards += 1
                         current_bytes = 0
                     current_bytes += nbytes
                     total_output_bytes += nbytes
-            else:
-                if nbytes + current_bytes > target_size_bytes and current_bytes > 0:
-                    num_output_shards += 1
-                    current_bytes = 0
-                current_bytes += nbytes
-                total_output_bytes += nbytes
 
-    print(f"Output: {total_output_bytes / 1e9:.2f} GB across {num_output_shards} shard(s)")
+        print(f"Output: {total_output_bytes / 1e9:.2f} GB across {num_output_shards} shard(s)")
 
-    print("\nPass 2/2: Writing expanded model...")
-    new_weight_map: dict[str, str] = {}
-    output_shard_idx = 1
-    current_tensors: dict[str, torch.Tensor] = {}
-    current_bytes = 0
-    zeroed_count = 0
-
-    def flush_shard():
-        nonlocal output_shard_idx, current_tensors, current_bytes
-        if not current_tensors:
-            return
-        shard_name = f"model-{output_shard_idx:05d}-of-{num_output_shards:05d}.safetensors"
-        output_path = output_dir / shard_name
-        save_file(current_tensors, str(output_path))
-        for t_name in current_tensors:
-            new_weight_map[t_name] = shard_name
-        output_shard_idx += 1
-        current_tensors.clear()
+        print("\nPass 2/2: Writing expanded model...")
+        output_shard_idx = 1
+        current_tensors: dict[str, torch.Tensor] = {}
         current_bytes = 0
 
-    remap = {}
-    for new_idx, (src, is_new) in enumerate(layer_mapping):
-        if not is_new:
-            remap[src] = new_idx
+        def flush_shard():
+            nonlocal output_shard_idx, current_tensors, current_bytes
+            if not current_tensors:
+                return
+            shard_name = f"model-{output_shard_idx:05d}-of-{num_output_shards:05d}.safetensors"
+            output_path = output_dir / shard_name
+            save_file(current_tensors, str(output_path))
+            for t_name in current_tensors:
+                new_weight_map[t_name] = shard_name
+            output_shard_idx += 1
+            current_tensors.clear()
+            current_bytes = 0
 
-    for shard_file in tqdm(shard_files, desc="Processing"):
-        shard_path = model_dir / shard_file
-        if not shard_path.exists():
-            continue
+        for shard_file in tqdm(shard_files, desc="Processing"):
+            shard_path = model_dir / shard_file
+            if not shard_path.exists():
+                continue
 
-        with safe_open(str(shard_path), framework="pt", device="cpu") as sf:
-            for key in sf.keys():
-                tensor = sf.get_tensor(key)
-                nbytes = tensor_nbytes(tensor)
-                layer_idx = get_layer_index(key)
+            with safe_open(str(shard_path), framework="pt", device="cpu") as sf:
+                for key in sf.keys():
+                    tensor = sf.get_tensor(key)
+                    nbytes = tensor_nbytes(tensor)
+                    layer_idx = get_layer_index(key)
 
-                if layer_idx is not None:
-                    remapped_idx = remap.get(layer_idx, layer_idx)
-                    orig_key = set_layer_index(key, remapped_idx)
+                    if layer_idx is not None:
+                        remapped_idx = remap.get(layer_idx, layer_idx)
+                        orig_key = set_layer_index(key, remapped_idx)
 
-                    if nbytes + current_bytes > target_size_bytes and current_tensors:
-                        flush_shard()
-                    current_tensors[orig_key] = tensor
-                    current_bytes += nbytes
-
-                    for target_idx in orig_to_new.get(layer_idx, []):
-                        dup_key = set_layer_index(key, target_idx)
                         if nbytes + current_bytes > target_size_bytes and current_tensors:
                             flush_shard()
-
-                        if target_idx in new_layer_set and should_zero(dup_key):
-                            zeroed_tensor = torch.zeros_like(tensor)
-                            current_tensors[dup_key] = zeroed_tensor
-                            zeroed_count += 1
-                        else:
-                            current_tensors[dup_key] = tensor.clone()
+                        current_tensors[orig_key] = tensor
                         current_bytes += nbytes
-                else:
-                    if nbytes + current_bytes > target_size_bytes and current_tensors:
-                        flush_shard()
-                    current_tensors[key] = tensor
-                    current_bytes += nbytes
 
-    flush_shard()
+                        for target_idx in orig_to_new.get(layer_idx, []):
+                            dup_key = set_layer_index(key, target_idx)
+                            if nbytes + current_bytes > target_size_bytes and current_tensors:
+                                flush_shard()
 
-    actual_shards = output_shard_idx - 1
-    if actual_shards != num_output_shards:
-        print(f"Adjusting shard count: {num_output_shards} → {actual_shards}")
-        for i in range(1, actual_shards + 1):
-            old_name = output_dir / f"model-{i:05d}-of-{num_output_shards:05d}.safetensors"
-            new_name = output_dir / f"model-{i:05d}-of-{actual_shards:05d}.safetensors"
-            if old_name.exists() and old_name != new_name:
-                old_name.rename(new_name)
-        num_output_shards = actual_shards
+                            if target_idx in new_layer_set and should_zero(dup_key):
+                                zeroed_tensor = torch.zeros_like(tensor)
+                                current_tensors[dup_key] = zeroed_tensor
+                                zeroed_count += 1
+                            else:
+                                current_tensors[dup_key] = tensor.clone()
+                            current_bytes += nbytes
+                    else:
+                        if nbytes + current_bytes > target_size_bytes and current_tensors:
+                            flush_shard()
+                        current_tensors[key] = tensor
+                        current_bytes += nbytes
 
+        flush_shard()
+
+        actual_shards = output_shard_idx - 1
+        if actual_shards != num_output_shards:
+            print(f"Adjusting shard count: {num_output_shards} → {actual_shards}")
+            for i in range(1, actual_shards + 1):
+                old_name = output_dir / f"model-{i:05d}-of-{num_output_shards:05d}.safetensors"
+                new_name = output_dir / f"model-{i:05d}-of-{actual_shards:05d}.safetensors"
+                if old_name.exists() and old_name != new_name:
+                    old_name.rename(new_name)
+            num_output_shards = actual_shards
+
+    # ── Fixup shard names in weight map ─────────────────────────────────
     fixed_weight_map = {}
     for pname, sname in new_weight_map.items():
         fixed_weight_map[pname] = re.sub(
