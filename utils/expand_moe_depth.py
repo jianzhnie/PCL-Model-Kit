@@ -46,23 +46,9 @@ from utils.shared import (
     parse_copy_source,
     read_safetensors_header,
     set_layer_index,
+    should_zero,
     tensor_nbytes,
 )
-
-ZERO_PATTERNS = [
-    re.compile(r"self_attn\.(?:\d+\.)?o_proj\.weight$"),
-    re.compile(r"mlp\.experts\.\d+\.down_proj\.weight$"),
-    re.compile(r"mlps\.\d+\.down_proj\.weight$"),
-    re.compile(r"mlp\.down_proj\.weight$"),
-]
-
-
-def should_zero(param_name: str) -> bool:
-    """Check if a parameter in a new layer should be zeroed for identity init."""
-    for pat in ZERO_PATTERNS:
-        if pat.search(param_name):
-            return True
-    return False
 
 
 def expand_tensor_meta(

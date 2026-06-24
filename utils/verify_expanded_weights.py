@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 from utils.shared import (
     ALL_ROUTER_SUFFIXES,
+    build_layer_mapping,
     find_expert_count,
     get_expert_info,
     get_layer_index,
@@ -28,6 +29,7 @@ from utils.shared import (
     make_expert_key,
     parse_copy_source,
     set_layer_index,
+    should_zero,
 )
 
 
@@ -90,10 +92,21 @@ def verify_layers(orig_loader,
                   original_layers,
                   target_layers,
                   copy_source,
+                  insertion_mode="append",
                   workers=8):
-    print(f"\n[Layers] Verifying {original_layers} -> {target_layers} layers")
+    print(f"\n[Layers] Verifying {original_layers} -> {target_layers} layers "
+          f"(mode={insertion_mode})")
     num_new = target_layers - original_layers
-    mapping = parse_copy_source(copy_source, original_layers, num_new)
+    source_list = parse_copy_source(copy_source, original_layers, num_new)
+    layer_mapping = build_layer_mapping(
+        original_layers, target_layers, source_list, insertion_mode)
+
+    exp_to_orig: dict[int, int] = {}
+    new_layer_set: set[int] = set()
+    for exp_idx, (src, is_new) in enumerate(layer_mapping):
+        exp_to_orig[exp_idx] = src
+        if is_new:
+            new_layer_set.add(exp_idx)
 
     # ── Structural pre-check ──────────────────────────────────────────────
     exp_layer_indices: set[int] = set()
@@ -131,24 +144,14 @@ def verify_layers(orig_loader,
         diff = orig_non_layer_params ^ exp_non_layer_params
         print(f"  Difference: {diff}")
 
-    # Check original layers (0 to original_layers-1)
-    for li in range(original_layers):
-        op = orig_layer_params.get(li, set())
-        ep = exp_layer_params.get(li, set())
-        if op != ep:
-            return [
-                f"Param name mismatch in layer {li}: "
-                f"orig-only={op - ep}, exp-only={ep - op}"
-            ]
-
-    # Check new layers (original_layers to target_layers-1)
-    for offset, src in enumerate(mapping):
-        new_li = original_layers + offset
-        sp = orig_layer_params.get(src, set())
-        ep = exp_layer_params.get(new_li, set())
+    for exp_li in range(target_layers):
+        src_li = exp_to_orig[exp_li]
+        sp = orig_layer_params.get(src_li, set())
+        ep = exp_layer_params.get(exp_li, set())
         if sp != ep:
+            kind = "new" if exp_li in new_layer_set else "kept"
             return [
-                f"Param name mismatch in new layer {new_li} (←src layer {src}): "
+                f"Param name mismatch in {kind} layer {exp_li} (←src {src_li}): "
                 f"src-only={sp - ep}, exp-only={ep - sp}"
             ]
 
@@ -171,13 +174,18 @@ def verify_layers(orig_loader,
 
                 if l_idx is None:
                     src_name = exp_name
-                elif l_idx < original_layers:
-                    src_name = exp_name
                 else:
-                    src_idx = mapping[l_idx - original_layers]
+                    src_idx = exp_to_orig[l_idx]
                     src_name = set_layer_index(exp_name, src_idx)
 
                 t_exp = sf_exp.get_tensor(exp_name)
+
+                if l_idx is not None and l_idx in new_layer_set and should_zero(exp_name):
+                    if not torch.all(t_exp == 0):
+                        local_mismatches.append(
+                            f"Identity layer {l_idx}: {exp_name} should be zero but is not")
+                    continue
+
                 t_orig = orig_loader.get_tensor(src_name)
 
                 if t_orig is None:
@@ -208,7 +216,14 @@ def verify_layers(orig_loader,
     return mismatches
 
 
-def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES, workers=8):
+def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES,
+                   workers=8, layer_mapping_args=None):
+    """Verify expert expansion. Optionally handles combined depth+expert expansion.
+
+    layer_mapping_args: optional dict with keys
+        {original_layers, target_layers, copy_source, insertion_mode}
+        When provided, maps expanded layer indices back to original layers.
+    """
     _, orig_experts, orig_zero = find_expert_count(orig_loader.config)
     _, exp_experts, exp_zero = find_expert_count(exp_loader.config)
 
@@ -236,7 +251,31 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES,
             f"(orig {orig_zero} × factor {expansion_factor}), got {exp_zero}"
         ]
 
-    # ── Structural pre-check ──────────────────────────────────────────────
+    # ── Layer mapping for combined expansion ─────────────────────────────
+    exp_to_orig_layer: dict[int, int] | None = None
+    new_layer_set: set[int] = set()
+    if layer_mapping_args:
+        lm = layer_mapping_args
+        num_new = lm["target_layers"] - lm["original_layers"]
+        source_list = parse_copy_source(lm["copy_source"], lm["original_layers"], num_new)
+        full_mapping = build_layer_mapping(
+            lm["original_layers"], lm["target_layers"], source_list, lm["insertion_mode"])
+        exp_to_orig_layer = {}
+        for exp_idx, (src, is_new) in enumerate(full_mapping):
+            exp_to_orig_layer[exp_idx] = src
+            if is_new:
+                new_layer_set.add(exp_idx)
+
+    def _map_layer(exp_li: int) -> int:
+        if exp_to_orig_layer is not None:
+            if exp_li not in exp_to_orig_layer:
+                raise ValueError(
+                    f"Expanded layer {exp_li} not found in layer mapping "
+                    f"(range 0-{len(exp_to_orig_layer) - 1})")
+            return exp_to_orig_layer[exp_li]
+        return exp_li
+
+    # ── Structural pre-check (experts) ───────────────────────────────────
     exp_experts_by_layer: dict[int, set[int]] = defaultdict(set)
     exp_router_layers: set[int] = set()
     exp_expert_params: dict[int, set[str]] = defaultdict(set)
@@ -267,14 +306,38 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES,
             if li is not None:
                 orig_router_layers.add(li)
 
-    if orig_router_layers != exp_router_layers:
+    if exp_to_orig_layer is not None:
+        mapped_exp_router_layers = {_map_layer(li) for li in exp_router_layers}
+        if not orig_router_layers.issubset(mapped_exp_router_layers):
+            return [
+                f"Router layer mismatch (combined). "
+                f"Orig layers: {sorted(orig_router_layers)}, "
+                f"Mapped exp layers: {sorted(mapped_exp_router_layers)}"
+            ]
+    elif orig_router_layers != exp_router_layers:
         return [
             f"Router layer mismatch. "
             f"Orig layers: {sorted(orig_router_layers)}, "
             f"Exp layers: {sorted(exp_router_layers)}"
         ]
 
-    target_total_experts = exp_experts + exp_zero
+    # Detect whether zero experts have stored weights in the original model.
+    # Identity-type zero experts (e.g., LongCat-Flash-Lite) have no parameters
+    # in safetensors; only routed expert weights are stored.
+    orig_has_zero_expert_weights = False
+    if orig_zero > 0:
+        for name in orig_loader.weight_map:
+            info = get_expert_info(name)
+            if info:
+                _, e_idx, _ = info
+                if e_idx >= orig_experts:
+                    orig_has_zero_expert_weights = True
+                    break
+
+    if orig_has_zero_expert_weights:
+        target_total_experts = exp_experts + exp_zero
+    else:
+        target_total_experts = exp_experts
 
     for layer_idx in exp_experts_by_layer:
         actual_indices = sorted(exp_experts_by_layer[layer_idx])
@@ -286,7 +349,8 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES,
                 f"got {actual_indices[:8]}{'...' if len(actual_indices) > 8 else ''}"
             ]
 
-        op = orig_expert_params.get(layer_idx, set())
+        orig_li = _map_layer(layer_idx)
+        op = orig_expert_params.get(orig_li, set())
         ep = exp_expert_params.get(layer_idx, set())
         if op != ep:
             return [
@@ -310,10 +374,20 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES,
         with safe_open(exp_loader.model_dir / shard_name,
                        framework="pt") as sf_exp:
             for exp_name in exp_loader.params_by_shard[shard_name]:
+                exp_li = get_layer_index(exp_name)
+                orig_li = _map_layer(exp_li) if exp_li is not None else None
+                is_new_layer = exp_li is not None and exp_li in new_layer_set
+
+                def _remap_name(name):
+                    if orig_li is not None and orig_li != exp_li:
+                        return set_layer_index(name, orig_li)
+                    return name
+
                 # 1. Router parameters
                 if exp_name.endswith(router_suffixes):
                     t_exp = sf_exp.get_tensor(exp_name)
-                    t_orig = orig_loader.get_tensor(exp_name)
+                    orig_name = _remap_name(exp_name)
+                    t_orig = orig_loader.get_tensor(orig_name)
 
                     if t_orig is None:
                         local_mismatches.append(
@@ -355,15 +429,25 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES,
                 info = get_expert_info(exp_name)
                 if info:
                     l_idx, e_idx, rest = info
+                    src_l_idx = _map_layer(l_idx)
+
+                    if is_new_layer and should_zero(exp_name):
+                        t_exp = sf_exp.get_tensor(exp_name)
+                        if not torch.all(t_exp == 0):
+                            local_mismatches.append(
+                                f"Identity layer {l_idx}: {exp_name} should be zero")
+                        continue
+
                     if e_idx < orig_experts:
-                        src_name = exp_name
+                        src_name = make_expert_key(src_l_idx, e_idx, rest)
                     elif e_idx < exp_experts:
                         src_e_idx = e_idx % orig_experts
-                        src_name = make_expert_key(l_idx, src_e_idx, rest)
-                    else:
-                        # Zero-expert: source is the corresponding original zero-expert
+                        src_name = make_expert_key(src_l_idx, src_e_idx, rest)
+                    elif orig_has_zero_expert_weights:
                         src_e_idx = orig_experts + ((e_idx - exp_experts) % orig_zero)
-                        src_name = make_expert_key(l_idx, src_e_idx, rest)
+                        src_name = make_expert_key(src_l_idx, src_e_idx, rest)
+                    else:
+                        continue
 
                     t_exp = sf_exp.get_tensor(exp_name)
                     t_orig = orig_loader.get_tensor(src_name)
@@ -384,7 +468,15 @@ def verify_experts(orig_loader, exp_loader, router_suffixes=ALL_ROUTER_SUFFIXES,
 
                 # 3. Regular parameters
                 t_exp = sf_exp.get_tensor(exp_name)
-                t_orig = orig_loader.get_tensor(exp_name)
+                orig_name = _remap_name(exp_name)
+
+                if is_new_layer and should_zero(exp_name):
+                    if not torch.all(t_exp == 0):
+                        local_mismatches.append(
+                            f"Identity layer: {exp_name} should be zero")
+                    continue
+
+                t_orig = orig_loader.get_tensor(orig_name)
                 if t_orig is None:
                     local_mismatches.append(f"Source missing: {exp_name}")
                 elif t_exp.shape != t_orig.shape:
@@ -423,7 +515,7 @@ def main():
                         help="Expanded model directory")
     parser.add_argument("--type",
                         type=str,
-                        choices=["layers", "experts"],
+                        choices=["layers", "experts", "combined"],
                         required=True,
                         help="Expansion type")
 
@@ -439,6 +531,11 @@ def main():
                         type=str,
                         default="seq",
                         help="Copy source mapping (seq, idx, or comma list)")
+    parser.add_argument("--insertion_mode",
+                        type=str,
+                        choices=["interleave", "append"],
+                        default="append",
+                        help="Layer insertion mode used during expansion")
     parser.add_argument("--router_suffixes",
                         type=str,
                         default=None,
@@ -472,11 +569,30 @@ def main():
                 args.orig_layers,
                 args.target_layers,
                 args.copy_source,
+                insertion_mode=args.insertion_mode,
                 workers=args.workers,
             )
         except ValueError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
+    elif args.type == "combined":
+        router_suffixes = ALL_ROUTER_SUFFIXES
+        if args.router_suffixes:
+            router_suffixes = tuple(s.strip()
+                                    for s in args.router_suffixes.split(","))
+        layer_mapping_args = {
+            "original_layers": args.orig_layers,
+            "target_layers": args.target_layers,
+            "copy_source": args.copy_source,
+            "insertion_mode": args.insertion_mode,
+        }
+        mismatches = verify_experts(
+            orig_loader,
+            exp_loader,
+            router_suffixes=router_suffixes,
+            workers=args.workers,
+            layer_mapping_args=layer_mapping_args,
+        )
     else:
         router_suffixes = ALL_ROUTER_SUFFIXES
         if args.router_suffixes:

@@ -267,6 +267,11 @@ def build_layer_mapping(
     """
     num_new = target_layers - original_layers
 
+    if insertion_mode not in ("interleave", "append"):
+        raise ValueError(
+            f"Unknown insertion_mode '{insertion_mode}'. "
+            f"Must be 'interleave' or 'append'.")
+
     if insertion_mode == "append":
         mapping = [(i, False) for i in range(original_layers)]
         for offset in range(num_new):
@@ -303,4 +308,23 @@ def expand_router_bias(
         tensor, original_experts, zero_expert_num, expansion_factor,
         router_noise_scale=0.0,
     )
-    return 8 * 1024 ** 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Identity-init zero patterns (used by depth expansion + verification)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+ZERO_PATTERNS = [
+    re.compile(r"self_attn\.(?:\d+\.)?o_proj\.weight$"),
+    re.compile(r"mlp\.experts\.\d+\.down_proj\.weight$"),
+    re.compile(r"mlps\.\d+\.down_proj\.weight$"),
+    re.compile(r"mlp\.down_proj\.weight$"),
+]
+
+
+def should_zero(param_name: str) -> bool:
+    """Check if a parameter in a new identity layer should be zeroed."""
+    for pat in ZERO_PATTERNS:
+        if pat.search(param_name):
+            return True
+    return False
