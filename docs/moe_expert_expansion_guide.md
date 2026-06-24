@@ -64,6 +64,21 @@ expert_new.weight = expert_src.weight + randn() * expert_noise_scale * std(weigh
 
 扩展 2× 后：1024 个路由专家 + 512 个 zero expert，Router 输出维度从 768 → 1536。
 
+### LongCat-Flash-Lite 模型参数
+
+| 参数 | 值 |
+|------|------|
+| `n_routed_experts` | 256 |
+| `zero_expert_num` | 128 (identity 类型，无存储权重) |
+| `moe_topk` | 12 |
+| `expert_ffn_hidden_size` | 1024 |
+| `hidden_size` | 3072 |
+| `num_layers` | 14 |
+
+扩展 2× 后：512 个路由专家 + 256 个 zero expert，Router 输出维度从 384 → 768。
+
+> **与 Flash-Chat 的关键区别**: Flash-Lite 的 zero expert 为 identity 类型，不在 safetensors 中存储权重参数。扩展时仅复制 routed expert 权重（索引 0-255），zero expert 仅在 config 中的 `zero_expert_num` 和 Router 维度上按比例同步扩展。
+
 ### Zero Expert 处理
 
 LongCat-Flash-Chat 使用 identity 类型的 zero expert（输出恒为 0 或恒等映射）。扩展时 zero expert 也按相同倍数复制，保持与 routed expert 的比例关系不变。
@@ -140,6 +155,36 @@ python -m utils.expand_moe_experts \
     --router-noise-scale 1e-6 \
     --expert-noise-scale 0.01 \
     --workers 4
+```
+
+### LongCat-Flash-Lite 扩展示例
+
+**2× 专家扩展（256→512）**：
+
+```bash
+bash scripts/expand_longcat_lite_experts.sh
+```
+
+等价的 Python 命令：
+
+```bash
+python -m utils.expand_moe_experts \
+    --model_dir /path/to/LongCat-Flash-Lite \
+    --output_dir /path/to/LongCat-Flash-Lite-expertx2 \
+    --workers 4
+```
+
+**带对称性破坏（推荐用于后续训练）**：
+
+```bash
+ROUTER_NOISE_SCALE=1e-6 EXPERT_NOISE_SCALE=0.01 \
+    bash scripts/expand_longcat_lite_experts.sh
+```
+
+**3× 专家扩展（256→768）**：
+
+```bash
+TARGET_EXPERTS=768 bash scripts/expand_longcat_lite_experts.sh
 ```
 
 **2× 扩展 + 增大 top-k（更强表达力）**：
@@ -233,9 +278,16 @@ print(f"Layer 0 experts: {min(experts_layer0)}-{max(experts_layer0)}")
 ### 使用 verify_expanded_weights.py
 
 ```bash
+# LongCat-Flash-Chat 专家扩展验证
 python -m utils.verify_expanded_weights \
-    --original_dir /path/to/original_model \
-    --expanded_dir /path/to/expanded_model
+    --type experts \
+    --orig_dir /path/to/original_model \
+    --exp_dir /path/to/expanded_model
+
+# LongCat-Flash-Lite 专家扩展验证
+bash scripts/verify_expanded_weights.sh experts \
+    /path/to/LongCat-Flash-Lite \
+    /path/to/LongCat-Flash-Lite-expertx2
 ```
 
 ---

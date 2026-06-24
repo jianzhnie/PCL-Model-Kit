@@ -180,14 +180,15 @@ self.classifier = nn.Linear(config.hidden_size, self.n_routed_experts)
 
 这将产生 `(1536, hidden_size)` 的路由器，其中 zero 专家权重出现在位置 512-767 和 1280-1535，结构混乱。
 
-**正确做法：** 只复制真实专家部分的权重，zero 专家部分保持不变：
+**正确做法：** real 部分和 zero 部分都按 expansion_factor 复制：
 
 ```python
 if zero_expert_num > 0:
     real_part = tensor[:original_experts]    # 前 original_experts 行
     zero_part = tensor[original_experts:]    # 后 zero_expert_num 行
     expanded_real = torch.cat([real_part] * expansion_factor, dim=0)
-    new_tensor = torch.cat([expanded_real, zero_part], dim=0)
+    expanded_zero = torch.cat([zero_part] * expansion_factor, dim=0)
+    new_tensor = torch.cat([expanded_real, expanded_zero], dim=0)
 else:
     new_tensor = torch.cat([tensor] * expansion_factor, dim=0)
 ```
@@ -195,11 +196,11 @@ else:
 **结果示例（512 → 1024，zero_expert_num=256）：**
 ```
 输入:  [real(512) | zero(256)]  → shape (768, hidden_size)
-输出:  [real(512) | real(512) | zero(256)]  → shape (1280, hidden_size)
-                              ↑ zero 保持在末尾，数量不变
+输出:  [real(512) | real(512) | zero(256) | zero(256)]  → shape (1536, hidden_size)
+       ├── expanded_real: 1024 行           ├── expanded_zero: 512 行
 ```
 
-**配置输出：** `n_routed_experts` 更新为 `target_experts`，`zero_expert_num` 保持 256 不变。
+**配置输出：** `n_routed_experts` 更新为 `target_experts`（1024），`zero_expert_num` 同步更新为 `zero_expert_num × expansion_factor`（512）。
 
 ### 6.3 Pass 1 中的路由器大小估算
 
@@ -208,9 +209,9 @@ else:
 ```python
 if is_router_param(key):
     validate_router_shape(key, shape, total_routed)
-    # 新大小 = 原始字节数 × (target_experts + zero_expert_num) / total_routed
-    rows_per_expert = nbytes / total_routed
-    new_nbytes = int(rows_per_expert * (target_experts + zero_expert_num))
+    # 新大小 = target_experts + zero_expert_num * expansion_factor
+    new_dim0 = target_experts + zero_expert_num * expansion_factor
+    new_nbytes = get_nbytes_from_meta(dtype, [new_dim0] + list(shape[1:]))
 ```
 
 这里 key 对应的是 `total_routed = original_experts + zero_expert_num` 而非 `original_experts`。
@@ -277,7 +278,7 @@ DTYPE_SIZES = {
 ```json
 {
   "n_routed_experts": 1024,
-  "zero_expert_num": 256,
+  "zero_expert_num": 512,
   "zero_expert_type": "identity",
   "num_layers": 28,
   "hidden_size": 6144,
@@ -290,7 +291,7 @@ DTYPE_SIZES = {
 ```json
 {
   "n_routed_experts": 1024,
-  "zero_expert_num": 256,
+  "zero_expert_num": 512,
   "zero_expert_type": "identity",
   "num_layers": 28,
   "hidden_size": 6144,
@@ -352,7 +353,7 @@ python3 utils/expand_moe_experts.py \
 
 ## 14. 使用 LongCat 500B 模型时的注意事项
 
-1. **`zero_expert_num`**：扩增后保持 256 不变。路由器维度从 768 → 1280（1024 real + 256 zero），而非 1536。如果也要扩增 zero_expert_num，需要在 config.json 中手动修改。
+1. **`zero_expert_num`**：扩增后同步按 expansion_factor 倍数扩展（例如 256 → 512）。路由器维度从 768 → 1536（1024 real + 512 zero）。
 
 2. **`zero_expert_type`**：保持 `"identity"` 不变。零专家在扩增后继续执行透传。
 

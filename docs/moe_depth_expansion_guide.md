@@ -50,7 +50,7 @@ LongCat-Flash-Chat 每层结构：
 
 ### 扩展结构示意
 
-**Interleave 模式**（推荐）：
+**Interleave 模式 — 2× 扩展**（每个原始层后插入恒等层）：
 
 ```
 原始:    [Layer0] [Layer1] [Layer2] ... [Layer27]
@@ -58,6 +58,33 @@ LongCat-Flash-Chat 每层结构：
 扩展后:  [Layer0] [ID_0] [Layer1] [ID_1] [Layer2] [ID_2] ... [Layer27] [ID_27]
                    ↑ 恒等          ↑ 恒等            ↑ 恒等              ↑ 恒等
 ```
+
+**Interleave 模式 — 部分扩展**（新增层数 < 原始层数时的排布）：
+
+以 14→18（+4 层）为例，默认 `copy_source=seq` 生成 `source_list=[0,1,2,3]`。
+`build_layer_mapping` 按原始层顺序遍历，仅在 source 为层 0-3 的位置各插入一个恒等层：
+
+```
+[L0] [ID←0] [L1] [ID←1] [L2] [ID←2] [L3] [ID←3] [L4] [L5] ... [L13]
+      ↑恒等        ↑恒等        ↑恒等        ↑恒等   ← 后续无插入
+```
+
+恒等层集中在前部。如需均匀分布，通过 `--copy_source` 手动指定 source 层：
+
+```bash
+# 在层 3, 6, 9, 12 后面各插入恒等层
+python -m utils.expand_moe_depth \
+    --model_dir /path/to/model --output_dir /path/to/output \
+    --target_layers 18 --copy_source "3,6,9,12" --insertion_mode interleave
+```
+
+得到：
+
+```
+[L0] [L1] [L2] [L3] [ID←3] [L4] [L5] [L6] [ID←6] [L7] [L8] [L9] [ID←9] [L10] [L11] [L12] [ID←12] [L13]
+```
+
+恒等层均匀分布在网络的 1/4、1/2、3/4、尾部位置，后续训练效果通常优于集中前部。
 
 **Append 模式**：
 
@@ -123,6 +150,34 @@ python -m utils.expand_moe_depth \
     --insertion_mode interleave
 ```
 
+### LongCat-Flash-Lite 扩展示例
+
+**2× 深度扩展（14→28 层）**：
+
+```bash
+bash scripts/expand_longcat_lite_depth.sh
+```
+
+等价的 Python 命令：
+
+```bash
+python -m utils.expand_moe_depth \
+    --model_dir /path/to/LongCat-Flash-Lite \
+    --output_dir /path/to/LongCat-Flash-Lite-depth2 \
+    --target_layers 28 \
+    --insertion_mode interleave \
+    --workers 4
+```
+
+LongCat-Flash-Lite 每层结构：
+
+| 组件 | 参数 | 新层中的处理 |
+|------|------|-------------|
+| `self_attn.{0,1}.o_proj.weight` | MLA 注意力输出 | → 置零 |
+| `mlp.experts.{0..255}.down_proj.weight` | 256 个专家输出 | → 置零 |
+| `mlps.{0,1}.down_proj.weight` | 共享 MLP 输出 | → 置零 |
+| 其余所有权重 | 输入投影、归一化等 | → 从源层复制 |
+
 **保守扩展（28→42 层，均匀隔层插入）**：
 
 ```bash
@@ -156,6 +211,24 @@ python -m utils.expand_moe_depth \
 ```bash
 python -m utils.test_expand_moe_depth
 ```
+
+### 使用 verify_expanded_weights.py
+
+```bash
+# LongCat-Flash-Chat 深度扩展验证 (28→56)
+bash scripts/verify_expanded_weights.sh layers \
+    /path/to/LongCat-Flash-Chat \
+    /path/to/LongCat-Flash-Chat-56L \
+    --orig_layers 28 --target_layers 56 --insertion_mode interleave
+
+# LongCat-Flash-Lite 深度扩展验证 (14→28)
+bash scripts/verify_expanded_weights.sh layers \
+    /path/to/LongCat-Flash-Lite \
+    /path/to/LongCat-Flash-Lite-depth2 \
+    --orig_layers 14 --target_layers 28 --insertion_mode interleave
+```
+
+> 注意：验证时 `--insertion_mode` 必须与扩展时使用的模式一致，否则层映射不匹配会导致验证失败。
 
 测试覆盖：
 
@@ -251,3 +324,34 @@ ZERO_PATTERNS = [
 - `model.safetensors.index.json`：新的权重映射
 - `model-XXXXX-of-YYYYY.safetensors`：分片权重文件
 - 其余辅助文件（tokenizer 等）原样复制
+
+### 与 M1 专家扩展的组合
+
+M1 和 M2 可以组合使用，支持两种方式：
+
+**方式一：联合扩展（推荐，单次 IO）**
+
+```bash
+# LongCat-Flash-Lite: 14→18 层 + 256→512 专家
+bash scripts/expand_longcat_lite_combined.sh
+
+# 验证
+bash scripts/verify_expanded_weights.sh combined \
+    /path/to/LongCat-Flash-Lite \
+    /path/to/LongCat-Flash-Lite-combined \
+    --orig_layers 14 --target_layers 18 --insertion_mode interleave
+```
+
+**方式二：分步扩展（两次 IO）**
+
+```bash
+# Step 1: 深度 2× (M2)
+python -m utils.expand_moe_depth \
+    --model_dir /path/to/original \
+    --output_dir /path/to/step1_depth2x
+
+# Step 2: 专家数 2× (M1)
+python -m utils.expand_moe_experts \
+    --model_dir /path/to/step1_depth2x \
+    --output_dir /path/to/step2_experts2x
+```
