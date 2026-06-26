@@ -8,11 +8,11 @@
 #
 # Environment variables:
 #   MODEL_DIR               - source model directory
-#   OUTPUT_DIR              - destination directory (auto-derived if not set)
+#   OUTPUT_DIR              - destination directory
 #   EXPERT_EXPANSION_FACTOR - expansion multiplier (default: 2)
-#   TARGET_EXPERTS          - target expert count (overrides EXPERT_EXPANSION_FACTOR)
-#   ROUTER_NOISE_SCALE      - Gaussian noise for router weights (default: 0.0)
-#   EXPERT_NOISE_SCALE      - Gaussian noise for expert weights (default: 0.0)
+#   TARGET_EXPERTS          - target expert count (overrides factor)
+#   ROUTER_NOISE_SCALE      - Gaussian noise for router (default: 0)
+#   EXPERT_NOISE_SCALE      - Gaussian noise for experts (default: 0)
 #   WORKERS                 - parallel workers (default: 4)
 
 set -euo pipefail
@@ -34,9 +34,15 @@ if [[ ! -d "$MODEL_DIR" ]]; then
     exit 1
 fi
 
-ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
+ORIG_EXPERTS=$(python3 -c "
+import json
+print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))
+")
 ACTUAL_TARGET="${TARGET_EXPERTS:-$((ORIG_EXPERTS * EXPERT_EXPANSION_FACTOR))}"
-EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.2f}')")
+EXPANSION_FACTOR=$(python3 -c "
+n = ${ACTUAL_TARGET} / ${ORIG_EXPERTS}
+print(f'{n:.0f}' if ${ACTUAL_TARGET} % ${ORIG_EXPERTS} == 0 else f'{n:.2f}')
+")
 
 echo "=== LongCat-Flash-Lite Expert Expansion (M1) ==="
 echo "  Input:   $MODEL_DIR"
@@ -49,12 +55,16 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
     --target_experts "$ACTUAL_TARGET"
 )
 
-[[ -n "$ROUTER_NOISE_SCALE" ]] && CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
-[[ -n "$EXPERT_NOISE_SCALE" ]] && CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
+[[ -n "$ROUTER_NOISE_SCALE" ]] && \
+    CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
+[[ -n "$EXPERT_NOISE_SCALE" ]] && \
+    CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
 [[ -n "$WORKERS" ]] && CMD+=(--workers "$WORKERS")
 
 "${CMD[@]}"
 
 echo ""
 echo "=== Done. Verify with: ==="
-echo "bash scripts/verify_expanded_weights.sh experts \"$MODEL_DIR\" \"$OUTPUT_DIR\""
+echo "bash scripts/verify_expanded_weights.sh experts \\"
+echo "    \"$MODEL_DIR\" \\"
+echo "    \"$OUTPUT_DIR\""

@@ -8,12 +8,12 @@
 #   INSERTION_MODE=append bash scripts/expand_longcat_lite_depth.sh
 #
 # Environment variables:
-#   MODEL_DIR        - source model directory
-#   OUTPUT_DIR       - destination directory (auto-derived if not set)
-#   TARGET_LAYERS    - target layer count (default: 28 = 2×)
-#   COPY_SOURCE      - source mapping: seq, single int, or comma list (default: seq)
-#   INSERTION_MODE   - interleave or append (default: interleave)
-#   WORKERS          - parallel workers (default: 4)
+#   MODEL_DIR      - source model directory
+#   OUTPUT_DIR     - destination directory
+#   TARGET_LAYERS  - target layer count (default: 28 = 2×)
+#   COPY_SOURCE    - source mapping (default: seq)
+#   INSERTION_MODE - interleave or append (default: interleave)
+#   WORKERS        - parallel workers (default: 4)
 
 set -euo pipefail
 
@@ -33,12 +33,17 @@ if [[ ! -d "$MODEL_DIR" ]]; then
     exit 1
 fi
 
-ORIG_LAYERS=$(python3 -c "import json; c=json.load(open('${MODEL_DIR}/config.json')); print(c.get('num_layers', c.get('num_hidden_layers', 0)))")
+ORIG_LAYERS=$(python3 -c "
+import json
+c = json.load(open('${MODEL_DIR}/config.json'))
+print(c.get('num_layers', c.get('num_hidden_layers', 0)))
+")
 
 echo "=== LongCat-Flash-Lite Depth Expansion (M2) ==="
 echo "  Input:   $MODEL_DIR"
 echo "  Output:  $OUTPUT_DIR"
-echo "  Layers:  ${ORIG_LAYERS} → ${TARGET_LAYERS} (+$((TARGET_LAYERS - ORIG_LAYERS)) identity layers, ${INSERTION_MODE})"
+echo "  Layers:  ${ORIG_LAYERS} → ${TARGET_LAYERS}" \
+     "(+$((TARGET_LAYERS - ORIG_LAYERS)) identity, ${INSERTION_MODE})"
 echo "  Source:  ${COPY_SOURCE:-seq}"
 
 CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
@@ -55,4 +60,10 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
 
 echo ""
 echo "=== Done. Verify with: ==="
-echo "bash scripts/verify_expanded_weights.sh layers \"$MODEL_DIR\" \"$OUTPUT_DIR\" --orig_layers ${ORIG_LAYERS} --target_layers ${TARGET_LAYERS} --copy_source \"${COPY_SOURCE:-seq}\" --insertion_mode ${INSERTION_MODE}"
+echo "bash scripts/verify_expanded_weights.sh layers \\"
+echo "    \"$MODEL_DIR\" \\"
+echo "    \"$OUTPUT_DIR\" \\"
+echo "    --orig_layers ${ORIG_LAYERS}" \
+     "--target_layers ${TARGET_LAYERS} \\"
+echo "    --copy_source \"${COPY_SOURCE:-seq}\"" \
+     "--insertion_mode ${INSERTION_MODE}"

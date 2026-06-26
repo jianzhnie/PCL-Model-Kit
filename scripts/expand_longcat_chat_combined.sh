@@ -4,19 +4,20 @@
 # Usage:
 #   bash scripts/expand_longcat_chat_combined.sh
 #   EXPERT_EXPANSION_FACTOR=3 bash scripts/expand_longcat_chat_combined.sh
-#   TARGET_LAYERS=36 TARGET_EXPERTS=2048 bash scripts/expand_longcat_chat_combined.sh
+#   TARGET_LAYERS=36 TARGET_EXPERTS=2048 \
+#       bash scripts/expand_longcat_chat_combined.sh
 #   COPY_SOURCE="6,13,20,26" bash scripts/expand_longcat_chat_combined.sh
 #
 # Environment variables:
 #   MODEL_DIR               - source model directory
-#   OUTPUT_DIR              - destination directory (auto-derived if not set)
+#   OUTPUT_DIR              - destination directory
 #   TARGET_LAYERS           - target layer count (default: 32)
-#   TARGET_EXPERTS          - target expert count (overrides EXPERT_EXPANSION_FACTOR)
+#   TARGET_EXPERTS          - target expert count (overrides factor)
 #   EXPERT_EXPANSION_FACTOR - expansion multiplier (default: 2)
-#   COPY_SOURCE             - source mapping: seq, single int, or comma list (default: 7,14,21,27)
+#   COPY_SOURCE             - source mapping (default: 7,14,21,27)
 #   INSERTION_MODE          - interleave or append (default: interleave)
-#   ROUTER_NOISE_SCALE      - Gaussian noise for router weights (default: 0.0)
-#   EXPERT_NOISE_SCALE      - Gaussian noise for expert weights (default: 0.0)
+#   ROUTER_NOISE_SCALE      - Gaussian noise for router (default: 0)
+#   EXPERT_NOISE_SCALE      - Gaussian noise for experts (default: 0)
 #   WORKERS                 - parallel workers (default: 4)
 
 set -euo pipefail
@@ -41,16 +42,28 @@ if [[ ! -d "$MODEL_DIR" ]]; then
     exit 1
 fi
 
-ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
-ORIG_LAYERS=$(python3 -c "import json; c=json.load(open('${MODEL_DIR}/config.json')); print(c.get('num_layers', c.get('num_hidden_layers', 0)))")
+ORIG_EXPERTS=$(python3 -c "
+import json
+print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))
+")
+ORIG_LAYERS=$(python3 -c "
+import json
+c = json.load(open('${MODEL_DIR}/config.json'))
+print(c.get('num_layers', c.get('num_hidden_layers', 0)))
+")
 ACTUAL_TARGET_EXPERTS="${TARGET_EXPERTS:-$((ORIG_EXPERTS * EXPERT_EXPANSION_FACTOR))}"
-EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET_EXPERTS} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.2f}')")
+EXPANSION_FACTOR=$(python3 -c "
+n = ${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}
+print(f'{n:.0f}' if ${ACTUAL_TARGET_EXPERTS} % ${ORIG_EXPERTS} == 0 else f'{n:.2f}')
+")
 
 echo "=== LongCat-Flash-Chat Combined Expansion (M1+M2) ==="
 echo "  Input:   $MODEL_DIR"
 echo "  Output:  $OUTPUT_DIR"
-echo "  Layers:  ${ORIG_LAYERS} → ${TARGET_LAYERS} (+$((TARGET_LAYERS - ORIG_LAYERS)) identity layers, ${INSERTION_MODE})"
-echo "  Experts: ${ORIG_EXPERTS} → ${ACTUAL_TARGET_EXPERTS} (${EXPANSION_FACTOR}×)"
+echo "  Layers:  ${ORIG_LAYERS} → ${TARGET_LAYERS}" \
+     "(+$((TARGET_LAYERS - ORIG_LAYERS)) identity, ${INSERTION_MODE})"
+echo "  Experts: ${ORIG_EXPERTS} → ${ACTUAL_TARGET_EXPERTS}" \
+     "(${EXPANSION_FACTOR}×)"
 echo "  Source:  ${COPY_SOURCE:-seq}"
 
 CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
@@ -62,12 +75,20 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
 )
 
 [[ -n "$COPY_SOURCE" ]] && CMD+=(--copy_source "$COPY_SOURCE")
-[[ -n "$ROUTER_NOISE_SCALE" ]] && CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
-[[ -n "$EXPERT_NOISE_SCALE" ]] && CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
+[[ -n "$ROUTER_NOISE_SCALE" ]] && \
+    CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
+[[ -n "$EXPERT_NOISE_SCALE" ]] && \
+    CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
 [[ -n "$WORKERS" ]] && CMD+=(--workers "$WORKERS")
 
 "${CMD[@]}"
 
 echo ""
 echo "=== Done. Verify with: ==="
-echo "bash scripts/verify_expanded_weights.sh combined \"$MODEL_DIR\" \"$OUTPUT_DIR\" --orig_layers ${ORIG_LAYERS} --target_layers ${TARGET_LAYERS} --copy_source \"${COPY_SOURCE:-seq}\" --insertion_mode ${INSERTION_MODE}"
+echo "bash scripts/verify_expanded_weights.sh combined \\"
+echo "    \"$MODEL_DIR\" \\"
+echo "    \"$OUTPUT_DIR\" \\"
+echo "    --orig_layers ${ORIG_LAYERS}" \
+     "--target_layers ${TARGET_LAYERS} \\"
+echo "    --copy_source \"${COPY_SOURCE:-seq}\"" \
+     "--insertion_mode ${INSERTION_MODE}"
