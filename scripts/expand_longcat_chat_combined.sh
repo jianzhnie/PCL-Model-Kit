@@ -70,4 +70,4 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
 
 echo ""
 echo "=== Done. Verify with: ==="
-echo "bash scripts/verify_expanded_weights.sh combined \"$MODEL_DIR\" \"$OUTPUT_DIR\" --orig_layers ${ORIG_LAYERS} --target_layers ${TARGET_LAYERS} --insertion_mode ${INSERTION_MODE}"
+echo "bash scripts/verify_expanded_weights.sh combined \"$MODEL_DIR\" \"$OUTPUT_DIR\" --orig_layers ${ORIG_LAYERS} --target_layers ${TARGET_LAYERS} --copy_source \"${COPY_SOURCE:-seq}\" --insertion_mode ${INSERTION_MODE}"

@@ -195,25 +195,24 @@ bash scripts/expand_longcat_chat_combined.sh
 
 #### 层映射
 
-与 M2 的 28→32 interleave 完全一致，`source_list = [0,1,2,3]`：
+与 M2 的 28→32 interleave 完全一致，`copy_source=7,14,21,27`：
 
 ```
-[L0] [ID←0] [L1] [ID←1] [L2] [ID←2] [L3] [ID←3] [L4] [L5] ... [L27]
+[L0] ... [L7] [ID←7] [L8] ... [L14] [ID←14] [L15] ... [L21] [ID←21] [L22] ... [L27] [ID←27]
 ```
 
 | 扩展后索引 | 来源 | 类型 |
 |:-:|:-:|:-:|
-| 0 | orig 0 | KEPT (原始) |
-| 1 | orig 0 | NEW (恒等) |
-| 2 | orig 1 | KEPT (原始) |
-| 3 | orig 1 | NEW (恒等) |
-| 4 | orig 2 | KEPT (原始) |
-| 5 | orig 2 | NEW (恒等) |
-| 6 | orig 3 | KEPT (原始) |
-| 7 | orig 3 | NEW (恒等) |
-| 8-31 | orig 4-27 | KEPT (无插入) |
+| 0-7 | orig 0-7 | KEPT (原始) |
+| 8 | orig 7 | NEW (恒等) |
+| 9-15 | orig 8-14 | KEPT (原始) |
+| 16 | orig 14 | NEW (恒等) |
+| 17-23 | orig 15-21 | KEPT (原始) |
+| 24 | orig 21 | NEW (恒等) |
+| 25-30 | orig 22-27 | KEPT (原始) |
+| 31 | orig 27 | NEW (恒等) |
 
-如需均匀分布恒等层，可使用 `--copy_source "7,14,21,27"`。
+如需前置集中恒等层，可使用 `COPY_SOURCE="" bash scripts/expand_longcat_chat_combined.sh`（默认 seq 模式）。
 
 #### 专家映射
 
@@ -331,6 +330,13 @@ bash scripts/verify_expanded_weights.sh combined \
 
 ```bash
 TARGET_EXPERTS=768 bash scripts/expand_longcat_chat_experts.sh
+```
+
+### 指定扩展倍数
+
+```bash
+EXPERT_EXPANSION_FACTOR=3 bash scripts/expand_longcat_chat_experts.sh
+EXPERT_EXPANSION_FACTOR=4 bash scripts/expand_longcat_chat_combined.sh
 ```
 
 ### 指定目标层数

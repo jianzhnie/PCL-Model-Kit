@@ -336,6 +336,13 @@ bash scripts/verify_expanded_weights.sh combined \
 TARGET_EXPERTS=768 bash scripts/expand_longcat_lite_experts.sh
 ```
 
+### 指定扩展倍数
+
+```bash
+EXPERT_EXPANSION_FACTOR=3 bash scripts/expand_longcat_lite_experts.sh
+EXPERT_EXPANSION_FACTOR=4 bash scripts/expand_longcat_lite_combined.sh
+```
+
 ### 指定目标层数
 
 ```bash
