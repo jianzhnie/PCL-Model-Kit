@@ -50,6 +50,11 @@ if [ ! -d "$MODEL_DIR" ]; then
     exit 1
 fi
 
+ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
+ACTUAL_TARGET="${TARGET_EXPERTS:-$((ORIG_EXPERTS * 2))}"
+EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.2f}')")
+echo "Experts:           ${ORIG_EXPERTS} → ${ACTUAL_TARGET} (${EXPANSION_FACTOR}×)"
+
 echo ""
 CMD=(
     env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"

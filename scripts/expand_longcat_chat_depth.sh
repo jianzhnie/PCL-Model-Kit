@@ -6,9 +6,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_depth.py"
 
 MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/LongCat-Flash-Chat}"
-OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-depth2}"
-TARGET_LAYERS="${TARGET_LAYERS:-56}"
-COPY_SOURCE="${COPY_SOURCE:-}"
+OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-depth32}"
+TARGET_LAYERS="${TARGET_LAYERS:-32}"
+COPY_SOURCE="${COPY_SOURCE:-7,14,21,27}"
 INSERTION_MODE="${INSERTION_MODE:-interleave}"
 WORKERS="${WORKERS:-4}"
 

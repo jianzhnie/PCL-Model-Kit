@@ -92,7 +92,7 @@ Router Bias (`e_score_correction_bias`) 同理: `[768] → [1536]`。
 
 #### 概述
 
-在 28 层之间交错插入 28 个恒等初始化层，总层数 56。
+在 28 层中均匀插入 4 个恒等初始化层，总层数 32。恒等层分布在网络的 1/4、1/2、3/4、尾部位置。
 
 ```bash
 bash scripts/expand_longcat_chat_depth.sh
@@ -110,19 +110,24 @@ output = input + Attention(Norm(input)) + MLP(Norm(...))
 
 #### Interleave 模式布局
 
-**2× 扩展 (28→56)**：每个原始层后插入一个恒等层
+**默认 +4 层扩展 (28→32, `copy_source=7,14,21,27`)**：恒等层均匀分布
 
 ```
-[L0] [ID←0] [L1] [ID←1] [L2] [ID←2] ... [L27] [ID←27]
+[L0] ... [L7] [ID←7] [L8] ... [L14] [ID←14] [L15] ... [L21] [ID←21] [L22] ... [L27] [ID←27]
 ```
 
-**+4 层扩展 (28→32, 默认 `copy_source=seq`)**：`source_list = [0,1,2,3]`，恒等层集中在前部
+| 扩展后索引 | 来源 | 类型 |
+|:-:|:-:|:-:|
+| 0-7 | orig 0-7 | 原始 |
+| 8 | orig 7 | 恒等 (identity-initialized) |
+| 9-15 | orig 8-14 | 原始 |
+| 16 | orig 14 | 恒等 (identity-initialized) |
+| 17-23 | orig 15-21 | 原始 |
+| 24 | orig 21 | 恒等 (identity-initialized) |
+| 25-30 | orig 22-27 | 原始 |
+| 31 | orig 27 | 恒等 (identity-initialized) |
 
-```
-[L0] [ID←0] [L1] [ID←1] [L2] [ID←2] [L3] [ID←3] [L4] [L5] ... [L27]
-```
-
-**均匀分布恒等层**：通过 `--copy_source` 手动指定，可让恒等层分散到网络中部和尾部：
+恒等层均匀分布在网络的 1/4、1/2、3/4、尾部位置，对后续训练通常比集中在前部更有利。
 
 ```bash
 # 在层 7, 14, 21, 27 后面各插入一个恒等层
@@ -134,12 +139,26 @@ python -m utils.expand_moe_depth \
     --insertion_mode interleave
 ```
 
+**2× 扩展 (28→56)**：每个原始层后插入一个恒等层
+
+```bash
+TARGET_LAYERS=56 COPY_SOURCE="" bash scripts/expand_longcat_chat_depth.sh
+```
+
+```
+[L0] [ID←0] [L1] [ID←1] [L2] [ID←2] ... [L27] [ID←27]
+```
+
 #### Append 模式布局
 
 原始 28 层顺序不变，恒等层追加在末尾：
 
+```bash
+INSERTION_MODE=append bash scripts/expand_longcat_chat_depth.sh
 ```
-[L0] [L1] ... [L27] [ID←0] [ID←1] ... [ID←27]
+
+```
+[L0] [L1] ... [L27] [ID←7] [ID←14] [ID←21] [ID←27]
 ```
 
 每个新层的处理：
@@ -152,14 +171,14 @@ python -m utils.expand_moe_depth \
 
 | 字段 | 原始 | 扩展后 |
 |---|---|---|
-| `num_layers` | 28 | 56 |
+| `num_layers` | 28 | 32 |
 | 其余字段 | 不变 | 不变 |
 
 #### 输出概要
 
 ```
-扩展: 87,492 个参数, 150 shards, 2242.4 GB
-新增恒等层: 28 层, 14,448 个张量置零
+扩展: 50,004 个参数, 86 shards, 1283.8 GB
+新增恒等层: 4 层, 2,064 个张量置零
 ```
 
 ---
@@ -277,11 +296,11 @@ bash scripts/verify_expanded_weights.sh experts \
 ```bash
 bash scripts/verify_expanded_weights.sh layers \
     /path/to/LongCat-Flash-Chat \
-    /path/to/LongCat-Flash-Chat-depth2 \
-    --orig_layers 28 --target_layers 56 --insertion_mode interleave
+    /path/to/LongCat-Flash-Chat-depth32 \
+    --orig_layers 28 --target_layers 32 --copy_source "7,14,21,27" --insertion_mode interleave
 ```
 
-验证内容：56 层结构完整、新层 `o_proj`/`down_proj` 全零、kept 层与原始层 bit-exact 匹配（含 interleave 重映射）。
+验证内容：32 层结构完整、新层（8/16/24/31）`o_proj`/`down_proj` 全零、kept 层与原始层 bit-exact 匹配（含 interleave 重映射）。
 
 ### 联合扩展验证
 
@@ -301,7 +320,7 @@ bash scripts/verify_expanded_weights.sh combined \
 | 扩展方式 | 输出路径 | 大小 |
 |---------|---------|------|
 | M1 专家扩展 | `/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-expertx2` | 2206.9 GB |
-| M2 深度扩展 | `/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-depth2` | 2242.4 GB |
+| M2 深度扩展 | `/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-depth32` | 1283.8 GB |
 | M1+M2 联合 | `/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-combined` | 2521.3 GB |
 
 ---
@@ -317,19 +336,27 @@ TARGET_EXPERTS=768 bash scripts/expand_longcat_chat_experts.sh
 ### 指定目标层数
 
 ```bash
-TARGET_LAYERS=42 bash scripts/expand_longcat_chat_depth.sh
+# 深度 2× (28→56, 每层后插入恒等层)
+TARGET_LAYERS=56 COPY_SOURCE="" bash scripts/expand_longcat_chat_depth.sh
 ```
 
-### 均匀分布恒等层（推荐用于少量新层）
+### 均匀分布恒等层（默认配置）
 
-默认 `copy_source=seq` 会让新层集中在前部。少量扩展时建议手动指定 source 使恒等层均匀分布：
+默认 `copy_source=7,14,21,27` 让恒等层均匀分布在网络的 1/4、1/2、3/4、尾部位置：
 
 ```bash
-# 28→32, 在层 7/14/21/27 后面各插入一个恒等层
-COPY_SOURCE="7,14,21,27" bash scripts/expand_longcat_chat_depth.sh
+# 28→32, 在层 7/14/21/27 后面各插入一个恒等层 (默认)
+bash scripts/expand_longcat_chat_depth.sh
 
-# 28→32, 联合扩展同理
-COPY_SOURCE="7,14,21,27" bash scripts/expand_longcat_chat_combined.sh
+# 联合扩展同理 (默认)
+bash scripts/expand_longcat_chat_combined.sh
+```
+
+自定义分布位置：
+
+```bash
+# 在层 6/13/20/26 后面各插入一个恒等层
+COPY_SOURCE="6,13,20,26" bash scripts/expand_longcat_chat_depth.sh
 ```
 
 ### 带对称性破坏噪声（推荐用于后续训练）
@@ -352,7 +379,7 @@ INSERTION_MODE=append bash scripts/expand_longcat_chat_depth.sh
 | 方案 | 参数增长 | 推理延迟 | Function Preserving | 适用场景 |
 |------|---------|---------|:---:|---------|
 | M1: 专家数 2× | ~2× | 不变 | 需对称性破坏 | 推理成本受限 |
-| M2: 深度 2× | ~2× | ~2× | 完全保持 | 表达力优先 |
+| M2: 深度 +4 | ~1.14× | ~1.14× | 完全保持 | 表达力优先 |
 | M1+M2 联合 | ~2.3× | ~1.14× | 需对称性破坏 | 综合扩展 |
 
 ---
@@ -384,6 +411,6 @@ INSERTION_MODE=append bash scripts/expand_longcat_chat_depth.sh
 
 1. **Identity zero expert**: LongCat-Flash-Chat 的 256 个 zero expert 为 identity 类型，不在 safetensors 中存储权重。扩展时仅在 config 和 Router 维度中按比例扩展 `zero_expert_num`（256→512），验证时自动跳过 zero expert 的权重索引检查。
 2. **Interleave 模式**: 深度扩展默认使用 interleave 模式，新层交错插入原始层之间。验证时必须指定 `--insertion_mode interleave`，否则层映射不匹配。
-3. **磁盘空间**: 扩展前确保目标目录有足够空间（联合扩展约需 2.5 TB）。
+3. **磁盘空间**: 扩展前确保目标目录有足够空间（联合扩展约需 2.5 TB，深度 +4 层约需 1.3 TB）。
 4. **并行写入**: 默认使用 4 个 worker 并行写入，可通过 `WORKERS` 环境变量调整。推荐使用 16 个 worker 以加速大模型扩展。
 5. **两遍处理**: 所有扩展脚本均使用两遍处理（Pass 1 扫描 header 计算布局，Pass 2 加载写入），确保输出 shard 文件名从一开始就是正确的。

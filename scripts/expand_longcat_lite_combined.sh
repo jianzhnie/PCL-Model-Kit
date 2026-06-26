@@ -52,6 +52,14 @@ if [ ! -d "$MODEL_DIR" ]; then
     exit 1
 fi
 
+ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
+ORIG_LAYERS=$(python3 -c "import json; c=json.load(open('${MODEL_DIR}/config.json')); print(c.get('num_layers', c.get('num_hidden_layers', 0)))")
+ACTUAL_TARGET_EXPERTS="${TARGET_EXPERTS:-$((ORIG_EXPERTS * 2))}"
+ACTUAL_TARGET_LAYERS="${TARGET_LAYERS:-$((ORIG_LAYERS + 4))}"
+EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET_EXPERTS} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.2f}')")
+echo "Experts:           ${ORIG_EXPERTS} → ${ACTUAL_TARGET_EXPERTS} (${EXPANSION_FACTOR}×)"
+echo "Layers:            ${ORIG_LAYERS} → ${ACTUAL_TARGET_LAYERS} (+$((ACTUAL_TARGET_LAYERS - ORIG_LAYERS)) identity layers)"
+
 echo ""
 CMD=(
     env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
