@@ -10,7 +10,8 @@
 #   MODEL_DIR            - source model directory
 #   OUTPUT_DIR           - destination directory (auto-derived if not set)
 #   TARGET_LAYERS        - target layer count (default: 18 = 14+4)
-#   TARGET_EXPERTS       - target expert count (default: 512 = 2×)
+#   TARGET_EXPERTS       - target expert count (overrides EXPERT_EXPANSION_FACTOR)
+#   EXPERT_EXPANSION_FACTOR - expansion multiplier (default: 2, i.e. 256→512)
 #   INSERTION_MODE       - interleave or append (default: interleave)
 #   ROUTER_NOISE_SCALE   - Gaussian noise for router weights (default: 0.0)
 #   EXPERT_NOISE_SCALE   - Gaussian noise for expert weights (default: 0.0)
@@ -26,6 +27,7 @@ EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_combined.py"
 MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/LongCat-Flash-Lite}"
 TARGET_LAYERS="${TARGET_LAYERS:-}"
 TARGET_EXPERTS="${TARGET_EXPERTS:-}"
+EXPERT_EXPANSION_FACTOR="${EXPERT_EXPANSION_FACTOR:-2}"
 COPY_SOURCE="${COPY_SOURCE:-}"
 INSERTION_MODE="${INSERTION_MODE:-interleave}"
 ROUTER_NOISE_SCALE="${ROUTER_NOISE_SCALE:-}"
@@ -41,7 +43,7 @@ echo "============================================"
 echo "Model dir:         ${MODEL_DIR}"
 echo "Output dir:        ${OUTPUT_DIR}"
 echo "Target Layers:     ${TARGET_LAYERS:-auto (14+4=18)}"
-echo "Target Experts:    ${TARGET_EXPERTS:-auto (2× = 512)}"
+echo "Target Experts:    ${TARGET_EXPERTS:-auto (${EXPERT_EXPANSION_FACTOR}×)}"
 echo "Insertion Mode:    ${INSERTION_MODE}"
 echo "Router Noise:      ${ROUTER_NOISE_SCALE:-0.0}"
 echo "Expert Noise:      ${EXPERT_NOISE_SCALE:-0.0}"
@@ -54,7 +56,7 @@ fi
 
 ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
 ORIG_LAYERS=$(python3 -c "import json; c=json.load(open('${MODEL_DIR}/config.json')); print(c.get('num_layers', c.get('num_hidden_layers', 0)))")
-ACTUAL_TARGET_EXPERTS="${TARGET_EXPERTS:-$((ORIG_EXPERTS * 2))}"
+ACTUAL_TARGET_EXPERTS="${TARGET_EXPERTS:-$((ORIG_EXPERTS * EXPERT_EXPANSION_FACTOR))}"
 ACTUAL_TARGET_LAYERS="${TARGET_LAYERS:-$((ORIG_LAYERS + 4))}"
 EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET_EXPERTS} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.2f}')")
 echo "Experts:           ${ORIG_EXPERTS} → ${ACTUAL_TARGET_EXPERTS} (${EXPANSION_FACTOR}×)"
@@ -69,7 +71,7 @@ CMD=(
 )
 
 [ -n "$TARGET_LAYERS" ] && CMD+=(--target_layers "$TARGET_LAYERS")
-[ -n "$TARGET_EXPERTS" ] && CMD+=(--target_experts "$TARGET_EXPERTS")
+CMD+=(--target_experts "$ACTUAL_TARGET_EXPERTS")
 [ -n "$COPY_SOURCE" ] && CMD+=(--copy_source "$COPY_SOURCE")
 [ -n "$ROUTER_NOISE_SCALE" ] && CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
 [ -n "$EXPERT_NOISE_SCALE" ] && CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")

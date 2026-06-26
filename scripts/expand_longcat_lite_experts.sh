@@ -8,7 +8,8 @@
 # Environment variables (override defaults):
 #   MODEL_DIR            - source model directory
 #   OUTPUT_DIR           - destination directory (auto-derived if not set)
-#   TARGET_EXPERTS       - target number of routed experts (default: 512 = 2×)
+#   TARGET_EXPERTS       - target number of routed experts (overrides EXPERT_EXPANSION_FACTOR)
+#   EXPERT_EXPANSION_FACTOR - expansion multiplier (default: 2, i.e. 256→512)
 #   ROUTER_NOISE_SCALE   - Gaussian noise for router weights (default: 0.0)
 #   EXPERT_NOISE_SCALE   - Gaussian noise for expert weights (default: 0.0)
 #   WORKERS              - parallel workers (default: 4)
@@ -22,6 +23,7 @@ EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_experts.py"
 
 MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/LongCat-Flash-Lite}"
 TARGET_EXPERTS="${TARGET_EXPERTS:-}"
+EXPERT_EXPANSION_FACTOR="${EXPERT_EXPANSION_FACTOR:-2}"
 ROUTER_NOISE_SCALE="${ROUTER_NOISE_SCALE:-}"
 EXPERT_NOISE_SCALE="${EXPERT_NOISE_SCALE:-}"
 WORKERS="${WORKERS:-4}"
@@ -40,7 +42,7 @@ echo "  LongCat-Flash-Lite Expert Expansion (M1)"
 echo "============================================"
 echo "Model dir:         ${MODEL_DIR}"
 echo "Output dir:        ${OUTPUT_DIR}"
-echo "Target Experts:    ${TARGET_EXPERTS:-auto (2× = 512)}"
+echo "Target Experts:    ${TARGET_EXPERTS:-auto (${EXPERT_EXPANSION_FACTOR}×)}"
 echo "Router Noise:      ${ROUTER_NOISE_SCALE:-0.0}"
 echo "Expert Noise:      ${EXPERT_NOISE_SCALE:-0.0}"
 echo "Workers:           ${WORKERS}"
@@ -51,7 +53,7 @@ if [ ! -d "$MODEL_DIR" ]; then
 fi
 
 ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
-ACTUAL_TARGET="${TARGET_EXPERTS:-$((ORIG_EXPERTS * 2))}"
+ACTUAL_TARGET="${TARGET_EXPERTS:-$((ORIG_EXPERTS * EXPERT_EXPANSION_FACTOR))}"
 EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.2f}')")
 echo "Experts:           ${ORIG_EXPERTS} → ${ACTUAL_TARGET} (${EXPANSION_FACTOR}×)"
 
@@ -60,9 +62,9 @@ CMD=(
     env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
     --model_dir "$MODEL_DIR"
     --output_dir "$OUTPUT_DIR"
+    --target_experts "$ACTUAL_TARGET"
 )
 
-[ -n "$TARGET_EXPERTS" ] && CMD+=(--target_experts "$TARGET_EXPERTS")
 [ -n "$ROUTER_NOISE_SCALE" ] && CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
 [ -n "$EXPERT_NOISE_SCALE" ] && CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
 [ -n "$WORKERS" ] && CMD+=(--workers "$WORKERS")

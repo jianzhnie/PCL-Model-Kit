@@ -9,6 +9,7 @@ MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/Lo
 OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-combined}"
 TARGET_LAYERS="${TARGET_LAYERS:-32}"
 TARGET_EXPERTS="${TARGET_EXPERTS:-}"
+EXPERT_EXPANSION_FACTOR="${EXPERT_EXPANSION_FACTOR:-2}"
 COPY_SOURCE="${COPY_SOURCE:-7,14,21,27}"
 INSERTION_MODE="${INSERTION_MODE:-interleave}"
 ROUTER_NOISE_SCALE="${ROUTER_NOISE_SCALE:-}"
@@ -22,7 +23,7 @@ fi
 
 ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
 ORIG_LAYERS=$(python3 -c "import json; c=json.load(open('${MODEL_DIR}/config.json')); print(c.get('num_layers', c.get('num_hidden_layers', 0)))")
-ACTUAL_TARGET_EXPERTS="${TARGET_EXPERTS:-$((ORIG_EXPERTS * 2))}"
+ACTUAL_TARGET_EXPERTS="${TARGET_EXPERTS:-$((ORIG_EXPERTS * EXPERT_EXPANSION_FACTOR))}"
 EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET_EXPERTS} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}:.2f}')")
 
 echo "=== LongCat-Flash-Chat Combined Expansion (M1+M2) ==="
@@ -38,7 +39,7 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
 )
 
 [[ -n "$TARGET_LAYERS" ]] && CMD+=(--target_layers "$TARGET_LAYERS")
-[[ -n "$TARGET_EXPERTS" ]] && CMD+=(--target_experts "$TARGET_EXPERTS")
+CMD+=(--target_experts "$ACTUAL_TARGET_EXPERTS")
 [[ -n "$COPY_SOURCE" ]] && CMD+=(--copy_source "$COPY_SOURCE")
 [[ -n "$ROUTER_NOISE_SCALE" ]] && CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
 [[ -n "$EXPERT_NOISE_SCALE" ]] && CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
