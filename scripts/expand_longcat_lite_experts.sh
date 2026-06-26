@@ -1,53 +1,35 @@
-#!/bin/bash
-# Expand LongCat-Flash-Lite MoE experts (M1): 256 → 512 routed experts.
+#!/usr/bin/env bash
+# Expand LongCat-Flash-Lite MoE experts (M1): N → K×N routed experts.
 #
 # Usage:
 #   bash scripts/expand_longcat_lite_experts.sh
-#   TARGET_EXPERTS=768 bash scripts/expand_longcat_lite_experts.sh   # 3× experts
+#   EXPERT_EXPANSION_FACTOR=3 bash scripts/expand_longcat_lite_experts.sh
+#   TARGET_EXPERTS=768 bash scripts/expand_longcat_lite_experts.sh
 #
-# Environment variables (override defaults):
-#   MODEL_DIR            - source model directory
-#   OUTPUT_DIR           - destination directory (auto-derived if not set)
-#   TARGET_EXPERTS       - target number of routed experts (overrides EXPERT_EXPANSION_FACTOR)
-#   EXPERT_EXPANSION_FACTOR - expansion multiplier (default: 2, i.e. 256→512)
-#   ROUTER_NOISE_SCALE   - Gaussian noise for router weights (default: 0.0)
-#   EXPERT_NOISE_SCALE   - Gaussian noise for expert weights (default: 0.0)
-#   WORKERS              - parallel workers (default: 4)
+# Environment variables:
+#   MODEL_DIR               - source model directory
+#   OUTPUT_DIR              - destination directory (auto-derived if not set)
+#   EXPERT_EXPANSION_FACTOR - expansion multiplier (default: 2)
+#   TARGET_EXPERTS          - target expert count (overrides EXPERT_EXPANSION_FACTOR)
+#   ROUTER_NOISE_SCALE      - Gaussian noise for router weights (default: 0.0)
+#   EXPERT_NOISE_SCALE      - Gaussian noise for expert weights (default: 0.0)
+#   WORKERS                 - parallel workers (default: 4)
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
 EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_experts.py"
 
 MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/LongCat-Flash-Lite}"
+OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Lite-expertx2}"
 TARGET_EXPERTS="${TARGET_EXPERTS:-}"
 EXPERT_EXPANSION_FACTOR="${EXPERT_EXPANSION_FACTOR:-2}"
 ROUTER_NOISE_SCALE="${ROUTER_NOISE_SCALE:-}"
 EXPERT_NOISE_SCALE="${EXPERT_NOISE_SCALE:-}"
 WORKERS="${WORKERS:-4}"
 
-SUFFIX=""
-if [ -n "$TARGET_EXPERTS" ]; then
-    SUFFIX="${TARGET_EXPERTS}E"
-else
-    SUFFIX="expertx2"
-fi
-
-OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Lite-${SUFFIX}}"
-
-echo "============================================"
-echo "  LongCat-Flash-Lite Expert Expansion (M1)"
-echo "============================================"
-echo "Model dir:         ${MODEL_DIR}"
-echo "Output dir:        ${OUTPUT_DIR}"
-echo "Target Experts:    ${TARGET_EXPERTS:-auto (${EXPERT_EXPANSION_FACTOR}×)}"
-echo "Router Noise:      ${ROUTER_NOISE_SCALE:-0.0}"
-echo "Expert Noise:      ${EXPERT_NOISE_SCALE:-0.0}"
-echo "Workers:           ${WORKERS}"
-
-if [ ! -d "$MODEL_DIR" ]; then
+if [[ ! -d "$MODEL_DIR" ]]; then
     echo "ERROR: Model directory not found: $MODEL_DIR"
     exit 1
 fi
@@ -55,24 +37,24 @@ fi
 ORIG_EXPERTS=$(python3 -c "import json; print(json.load(open('${MODEL_DIR}/config.json')).get('n_routed_experts', 0))")
 ACTUAL_TARGET="${TARGET_EXPERTS:-$((ORIG_EXPERTS * EXPERT_EXPANSION_FACTOR))}"
 EXPANSION_FACTOR=$(python3 -c "print(f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.0f}' if ${ACTUAL_TARGET} % ${ORIG_EXPERTS} == 0 else f'{${ACTUAL_TARGET} / ${ORIG_EXPERTS}:.2f}')")
-echo "Experts:           ${ORIG_EXPERTS} → ${ACTUAL_TARGET} (${EXPANSION_FACTOR}×)"
 
-echo ""
-CMD=(
-    env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
+echo "=== LongCat-Flash-Lite Expert Expansion (M1) ==="
+echo "  Input:   $MODEL_DIR"
+echo "  Output:  $OUTPUT_DIR"
+echo "  Experts: ${ORIG_EXPERTS} → ${ACTUAL_TARGET} (${EXPANSION_FACTOR}×)"
+
+CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
     --model_dir "$MODEL_DIR"
     --output_dir "$OUTPUT_DIR"
     --target_experts "$ACTUAL_TARGET"
 )
 
-[ -n "$ROUTER_NOISE_SCALE" ] && CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
-[ -n "$EXPERT_NOISE_SCALE" ] && CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
-[ -n "$WORKERS" ] && CMD+=(--workers "$WORKERS")
+[[ -n "$ROUTER_NOISE_SCALE" ]] && CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
+[[ -n "$EXPERT_NOISE_SCALE" ]] && CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
+[[ -n "$WORKERS" ]] && CMD+=(--workers "$WORKERS")
 
 "${CMD[@]}"
 
 echo ""
-echo "Done. Output model at: ${OUTPUT_DIR}"
-echo ""
-echo "To verify:"
-echo "  bash scripts/verify_expanded_weights.sh experts ${MODEL_DIR} ${OUTPUT_DIR}"
+echo "=== Done. Verify with: ==="
+echo "bash scripts/verify_expanded_weights.sh experts \"$MODEL_DIR\" \"$OUTPUT_DIR\""

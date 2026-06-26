@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# Expand LongCat-Flash-Chat MoE experts (M1): N → K×N routed experts.
+#
+# Usage:
+#   bash scripts/expand_longcat_chat_experts.sh
+#   EXPERT_EXPANSION_FACTOR=3 bash scripts/expand_longcat_chat_experts.sh
+#   TARGET_EXPERTS=2048 bash scripts/expand_longcat_chat_experts.sh
+#
+# Environment variables:
+#   MODEL_DIR               - source model directory
+#   OUTPUT_DIR              - destination directory (auto-derived if not set)
+#   EXPERT_EXPANSION_FACTOR - expansion multiplier (default: 2)
+#   TARGET_EXPERTS          - target expert count (overrides EXPERT_EXPANSION_FACTOR)
+#   ROUTER_NOISE_SCALE      - Gaussian noise for router weights (default: 0.0)
+#   EXPERT_NOISE_SCALE      - Gaussian noise for expert weights (default: 0.0)
+#   WORKERS                 - parallel workers (default: 4)
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

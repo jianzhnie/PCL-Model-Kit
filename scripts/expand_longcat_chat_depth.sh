@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# Expand LongCat-Flash-Chat depth (M2): identity layer insertion.
+#
+# Usage:
+#   bash scripts/expand_longcat_chat_depth.sh
+#   TARGET_LAYERS=56 COPY_SOURCE="" bash scripts/expand_longcat_chat_depth.sh
+#   COPY_SOURCE="6,13,20,26" bash scripts/expand_longcat_chat_depth.sh
+#   INSERTION_MODE=append bash scripts/expand_longcat_chat_depth.sh
+#
+# Environment variables:
+#   MODEL_DIR        - source model directory
+#   OUTPUT_DIR       - destination directory (auto-derived if not set)
+#   TARGET_LAYERS    - target layer count (default: 32)
+#   COPY_SOURCE      - source mapping: seq, single int, or comma list (default: 7,14,21,27)
+#   INSERTION_MODE   - interleave or append (default: interleave)
+#   WORKERS          - parallel workers (default: 4)
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,10 +33,13 @@ if [[ ! -d "$MODEL_DIR" ]]; then
     exit 1
 fi
 
+ORIG_LAYERS=$(python3 -c "import json; c=json.load(open('${MODEL_DIR}/config.json')); print(c.get('num_layers', c.get('num_hidden_layers', 0)))")
+
 echo "=== LongCat-Flash-Chat Depth Expansion (M2) ==="
-echo "  Input:  $MODEL_DIR"
-echo "  Output: $OUTPUT_DIR"
-echo "  Layers: 28 -> $TARGET_LAYERS ($INSERTION_MODE)"
+echo "  Input:   $MODEL_DIR"
+echo "  Output:  $OUTPUT_DIR"
+echo "  Layers:  ${ORIG_LAYERS} → ${TARGET_LAYERS} (+$((TARGET_LAYERS - ORIG_LAYERS)) identity layers, ${INSERTION_MODE})"
+echo "  Source:  ${COPY_SOURCE:-seq}"
 
 CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
     --model_dir "$MODEL_DIR"
@@ -36,4 +55,4 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
 
 echo ""
 echo "=== Done. Verify with: ==="
-echo "bash scripts/verify_expanded_weights.sh layers \"$MODEL_DIR\" \"$OUTPUT_DIR\" --orig_layers 28 --target_layers ${TARGET_LAYERS} --insertion_mode ${INSERTION_MODE}"
+echo "bash scripts/verify_expanded_weights.sh layers \"$MODEL_DIR\" \"$OUTPUT_DIR\" --orig_layers ${ORIG_LAYERS} --target_layers ${TARGET_LAYERS} --insertion_mode ${INSERTION_MODE}"
