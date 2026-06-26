@@ -25,6 +25,7 @@ MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/Lo
 OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Lite-expertx2}"
 TARGET_EXPERTS="${TARGET_EXPERTS:-}"
 EXPERT_EXPANSION_FACTOR="${EXPERT_EXPANSION_FACTOR:-2}"
+TARGET_TOPK="${TARGET_TOPK:-}"
 ROUTER_NOISE_SCALE="${ROUTER_NOISE_SCALE:-}"
 EXPERT_NOISE_SCALE="${EXPERT_NOISE_SCALE:-}"
 WORKERS="${WORKERS:-4}"
@@ -55,6 +56,7 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
     --target_experts "$ACTUAL_TARGET"
 )
 
+[[ -n "$TARGET_TOPK" ]] && CMD+=(--target_topk "$TARGET_TOPK")
 [[ -n "$ROUTER_NOISE_SCALE" ]] && \
     CMD+=(--router-noise-scale "$ROUTER_NOISE_SCALE")
 [[ -n "$EXPERT_NOISE_SCALE" ]] && \

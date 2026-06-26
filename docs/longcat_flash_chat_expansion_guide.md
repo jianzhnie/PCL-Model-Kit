@@ -372,6 +372,16 @@ ROUTER_NOISE_SCALE=1e-6 EXPERT_NOISE_SCALE=0.01 \
     bash scripts/expand_longcat_chat_experts.sh
 ```
 
+### 同步扩展 moe_topk
+
+```bash
+# 专家数 2× 时 topk 也 2× (12→24)
+TARGET_TOPK=24 bash scripts/expand_longcat_chat_experts.sh
+
+# 联合扩展同理
+TARGET_TOPK=24 bash scripts/expand_longcat_chat_combined.sh
+```
+
 ### 使用 append 模式（非交错）
 
 ```bash

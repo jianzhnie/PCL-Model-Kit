@@ -479,6 +479,8 @@ def main():
                         help="Gaussian noise scale for duplicated router weights")
     parser.add_argument("--expert-noise-scale", type=float, default=0.0,
                         help="Gaussian noise scale for duplicated expert weights")
+    parser.add_argument("--target_topk", type=int, default=None,
+                        help="Target moe_topk. Defaults to unchanged.")
     parser.add_argument("--workers", type=int, default=1,
                         help="Number of worker processes (0 = CPU count)")
     args = parser.parse_args()
@@ -590,6 +592,15 @@ def main():
             new_config[key] = target_experts
     if zero_expert_num > 0:
         new_config["zero_expert_num"] = target_zero_expert_num
+    if args.target_topk is not None:
+        topk_keys = ["moe_topk", "num_experts_per_tok", "top_k"]
+        topk_set = False
+        for key in topk_keys:
+            if key in new_config:
+                new_config[key] = args.target_topk
+                topk_set = True
+        if not topk_set:
+            new_config["moe_topk"] = args.target_topk
 
     output_dir.mkdir(parents=True, exist_ok=True)
     with open(output_dir / "config.json", "w") as f:
