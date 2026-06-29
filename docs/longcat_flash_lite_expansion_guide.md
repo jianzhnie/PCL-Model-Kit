@@ -300,10 +300,13 @@ bash scripts/verify_expanded_weights.sh experts \
 bash scripts/verify_expanded_weights.sh layers \
     /path/to/LongCat-Flash-Lite \
     /path/to/LongCat-Flash-Lite-depth2 \
-    --orig_layers 14 --target_layers 28 --insertion_mode interleave
+    --orig_layers 14 --target_layers 28 \
+    --copy_source seq --insertion_mode interleave
 ```
 
 验证内容：28 层结构完整、新层 `o_proj`/`down_proj` 全零、kept 层与原始层 bit-exact 匹配（含 interleave 重映射）。
+
+> **注意**: 如果使用了非默认的 `COPY_SOURCE`（如 `"3,6,9,12"`），验证时必须传入相同的 `--copy_source` 值，否则层映射将不匹配。
 
 ### 联合扩展验证
 
@@ -311,10 +314,35 @@ bash scripts/verify_expanded_weights.sh layers \
 bash scripts/verify_expanded_weights.sh combined \
     /path/to/LongCat-Flash-Lite \
     /path/to/LongCat-Flash-Lite-combined \
-    --orig_layers 14 --target_layers 18 --insertion_mode interleave
+    --orig_layers 14 --target_layers 18 \
+    --copy_source seq --insertion_mode interleave
 ```
 
 验证内容：同时检查层映射 + 专家复制 + 恒等初始化。
+
+### 模型输出功能验证
+
+`verify_model_output.py` 提供端到端的功能验证：加载原始模型和扩展模型，在相同输入上运行前向传播和生成，比较 logit 分布和生成 token 序列。
+
+```bash
+python3 utils/verify_model_output.py \
+    --orig_dir /path/to/LongCat-Flash-Lite \
+    --exp_dir /path/to/LongCat-Flash-Lite-depth2 \
+    --device npu --dtype float32 --atol 1e-5 \
+    --mode all --sequential \
+    --json_output /tmp/verification_results.json
+```
+
+验证内容：
+- **前向传播**: 比较所有测试 prompt 的 logit 张量（shape、exact match、max_abs_diff、cos_sim）
+- **生成**: 使用贪心解码比较 token 序列（逐 token 匹配，检测首个分歧位置）
+
+| 验证方式 | 速度 | 覆盖范围 |
+|---------|------|---------|
+| `verify_expanded_weights.py` | 快（直接读取 safetensors） | 权重结构正确性 |
+| `verify_model_output.py` | 慢（加载完整模型推理） | 端到端功能正确性 |
+
+两者互补：权重验证通过但推理失败说明模型架构代码存在兼容性问题（如 `trust_remote_code` 差异）。
 
 ---
 
@@ -390,9 +418,11 @@ INSERTION_MODE=append bash scripts/expand_longcat_lite_depth.sh
 
 | 方案 | 参数增长 | 推理延迟 | Function Preserving | 适用场景 |
 |------|---------|---------|:---:|---------|
-| M1: 专家数 2× | ~1.5× | 不变 | 需对称性破坏 | 推理成本受限 |
-| M2: 深度 2× | ~1.5× | ~2× | 完全保持 | 表达力优先 |
-| M1+M2 联合 | ~1.8× | ~1.3× | 需对称性破坏 | 综合扩展 |
+| M1: 专家数 2× | ~1.5× | 不变 | ✅ 需对称性破坏 | 推理成本受限 |
+| M2: 深度 2× | ~1.5× | ~2× | ⚠️ 近似保持[[1]](#fn1) | 表达力优先 |
+| M1+M2 联合 | ~1.8× | ~1.3× | ⚠️ 近似保持[[1]](#fn1) | 综合扩展 |
+
+<a id="fn1">[1]</a>: LongCat-Flash-Lite 的非标准残差路径（双注意力 + 双 MLP + shortcut 连接）导致 identity layer insertion **非严格函数保持**。权重结构验证通过，但端到端输出存在微小偏差（max_abs_diff ≈ 30，cos_sim ≈ 0.97）。详见 [注意事项](#八注意事项) 第 6 条。
 
 ---
 
@@ -415,6 +445,7 @@ INSERTION_MODE=append bash scripts/expand_longcat_lite_depth.sh
 | `utils/expand_moe_depth.py` | M2 深度扩展核心逻辑 |
 | `utils/expand_moe_combined.py` | M1+M2 联合扩展核心逻辑 |
 | `utils/verify_expanded_weights.py` | 权重验证（layers/experts/combined 三种模式）|
+| `utils/verify_model_output.py` | 功能验证（前向 logit 比较 + 生成 token 比较）|
 | `utils/shared.py` | 共享工具：`build_layer_mapping`、`should_zero`、`expand_router_weight` 等 |
 
 ---
@@ -426,3 +457,43 @@ INSERTION_MODE=append bash scripts/expand_longcat_lite_depth.sh
 3. **磁盘空间**: 扩展前确保目标目录有足够空间（联合扩展约需 246 GB）。
 4. **并行写入**: 默认使用 4 个 worker 并行写入，可通过 `WORKERS` 环境变量调整。设为 0 使用全部 CPU 核心。
 5. **两遍处理**: 所有扩展脚本均使用两遍处理（Pass 1 扫描 header 计算布局，Pass 2 加载写入），确保输出 shard 文件名从一开始就是正确的。
+6. **LongCat-Flash 架构的函数保持性限制 ⚠️**: LongCat-Flash-Lite 的 Decoder Layer 并非标准 Transformer 结构，其使用了 **双并行注意力头 + 双并行 MLP + 快捷连接（shortcut）** 的非标准残差路径。
+
+   **标准 Transformer（理论假设）**：
+
+   ```
+   子层 1:  x = x + Attn(LN(x))
+   子层 2:  x = x + FFN(LN(x))
+   ```
+
+   置零 `o_proj` + `down_proj` 后：`x = x + 0 + 0 = x` → **严格恒等**。
+
+   **LongCat-Flash-Lite 实际结构**：
+
+   ```
+   子层 1:  x = x + Attn₀(LN₀(x))
+   子层 2:  x = x + MLP₀(LN₁(x))      shortcut = MoE(LN₁(x))   ← 快捷输出暂存
+   子层 3:  x = x + Attn₁(LN₂(x))
+   子层 4:  x = x + MLP₁(LN₃(x)) + shortcut                    ← 快捷输出在此注入
+   ```
+
+   ![LongCat-Flash 架构图](longcat_flash_architecture.svg)
+
+   置零 `o_proj` + `down_proj` 后：
+
+   ```
+   子层 1:  x = x + 0 = x
+   子层 2:  x = x + 0 = x              shortcut = MoE(LN₁(x)) ≠ 0  ← 非零!
+   子层 3:  x = x + 0 = x
+   子层 4:  x = x + 0 + shortcut = x + shortcut ≠ x             ← 非恒等!
+   ```
+
+   快捷连接从子层 2 提取 MoE 输出，跨越子层 3 后注入子层 4。即使将新层的所有 `o_proj` 和 `down_proj` 置零，子层 2 的 MoE 路由计算仍会产生非零的 `shortcut` 值——因为 Router 自身的分类器权重并未置零，且路由后的 expert 加权求和即使每个 expert 的 `down_proj=0` 输出为零，Router 本身的计算路径（`classifier` → `topk` → `gate` → `softmax`）并不经过被置零的参数。
+
+   **影响**：
+   - `verify_expanded_weights.py`（权重结构检查）**通过**——所有置零参数确实为零
+   - `verify_model_output.py`（端到端功能检查）**不通过**——实测 max_abs_diff ≈ 15（+4 层）≈ 30（+14 层）
+   - 误差随恒等层数量**线性累积**（每层贡献约 2–3 的 max_abs_diff）
+   - `cos_sim` 保持在高位（0.96–0.99），输出方向高度相关，可用于训练初始化
+
+   **适用场景**：尽管不是严格函数保持，扩展模型仍可用于后续训练——恒等层的输出与输入高度相关（cos_sim > 0.96），可作为良好的初始化起点。若需要严格函数保持的深度扩展，需针对 LongCat 架构修改恒等初始化逻辑（同时将 shortcut 路径中的 MoE Router 输出也归零，或重构残差连接）。

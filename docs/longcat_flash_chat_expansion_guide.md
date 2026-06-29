@@ -312,6 +312,21 @@ bash scripts/verify_expanded_weights.sh combined \
 
 验证内容：同时检查层映射 + 专家复制 + 恒等初始化。
 
+### 模型输出功能验证
+
+`verify_model_output.py` 提供端到端的功能验证。Chat 模型较大（原始 562 GB），需要使用 `--sequential` 模式并确保 CPU 内存充足（>1 TB）。
+
+```bash
+python3 utils/verify_model_output.py \
+    --orig_dir /path/to/LongCat-Flash-Chat \
+    --exp_dir /path/to/LongCat-Flash-Chat-depth32 \
+    --device npu --dtype float32 --atol 1e-5 \
+    --mode all --sequential \
+    --json_output /tmp/verification_results.json
+```
+
+> **注意**: NPU 仅 61 GB 内存，无法容纳 Chat 模型（562 GB float32）。如有大容量 CPU 内存环境（>1.5 TB）可尝试 CPU 推理验证。
+
 ---
 
 ## 四、输出权重路径
@@ -394,9 +409,11 @@ INSERTION_MODE=append bash scripts/expand_longcat_chat_depth.sh
 
 | 方案 | 参数增长 | 推理延迟 | Function Preserving | 适用场景 |
 |------|---------|---------|:---:|---------|
-| M1: 专家数 2× | ~2× | 不变 | 需对称性破坏 | 推理成本受限 |
-| M2: 深度 +4 | ~1.14× | ~1.14× | 完全保持 | 表达力优先 |
-| M1+M2 联合 | ~2.3× | ~1.14× | 需对称性破坏 | 综合扩展 |
+| M1: 专家数 2× | ~2× | 不变 | ✅ 需对称性破坏 | 推理成本受限 |
+| M2: 深度 +4 | ~1.14× | ~1.14× | ⚠️ 近似保持[[1]](#fn1) | 表达力优先 |
+| M1+M2 联合 | ~2.3× | ~1.14× | ⚠️ 近似保持[[1]](#fn1) | 综合扩展 |
+
+<a id="fn1">[1]</a>: LongCat-Flash 架构的双注意力 + 双 MLP + shortcut 连接导致 identity layer insertion **非严格函数保持**。权重验证通过，但端到端输出存在偏差（Lite 实测 cos_sim ≈ 0.97）。详见 [注意事项](#八注意事项) 第 6 条。
 
 ---
 
@@ -419,6 +436,7 @@ INSERTION_MODE=append bash scripts/expand_longcat_chat_depth.sh
 | `utils/expand_moe_depth.py` | M2 深度扩展核心逻辑 |
 | `utils/expand_moe_combined.py` | M1+M2 联合扩展核心逻辑 |
 | `utils/verify_expanded_weights.py` | 权重验证（layers/experts/combined 三种模式）|
+| `utils/verify_model_output.py` | 功能验证（前向 logit 比较 + 生成 token 比较）|
 | `utils/shared.py` | 共享工具：`build_layer_mapping`、`should_zero`、`expand_router_weight` 等 |
 
 ---
@@ -430,3 +448,43 @@ INSERTION_MODE=append bash scripts/expand_longcat_chat_depth.sh
 3. **磁盘空间**: 扩展前确保目标目录有足够空间（联合扩展约需 2.5 TB，深度 +4 层约需 1.3 TB）。
 4. **并行写入**: 默认使用 4 个 worker 并行写入，可通过 `WORKERS` 环境变量调整。推荐使用 16 个 worker 以加速大模型扩展。
 5. **两遍处理**: 所有扩展脚本均使用两遍处理（Pass 1 扫描 header 计算布局，Pass 2 加载写入），确保输出 shard 文件名从一开始就是正确的。
+6. **LongCat-Flash 架构的函数保持性限制 ⚠️**: LongCat-Flash-Chat 的 Decoder Layer 并非标准 Transformer 结构，其使用了 **双并行注意力头 + 双并行 MLP + 快捷连接（shortcut）** 的非标准残差路径（与 Lite 模型相同架构）。
+
+   **标准 Transformer（理论假设）**：
+
+   ```
+   子层 1:  x = x + Attn(LN(x))
+   子层 2:  x = x + FFN(LN(x))
+   ```
+
+   置零 `o_proj` + `down_proj` 后：`x = x + 0 + 0 = x` → **严格恒等**。
+
+   **LongCat-Flash-Chat 实际结构**：
+
+   ```
+   子层 1:  x = x + Attn₀(LN₀(x))
+   子层 2:  x = x + MLP₀(LN₁(x))      shortcut = MoE(LN₁(x))   ← 快捷输出暂存
+   子层 3:  x = x + Attn₁(LN₂(x))
+   子层 4:  x = x + MLP₁(LN₃(x)) + shortcut                    ← 快捷输出在此注入
+   ```
+
+   ![LongCat-Flash 架构图](longcat_flash_architecture.svg)
+
+   置零 `o_proj` + `down_proj` 后：
+
+   ```
+   子层 1:  x = x + 0 = x
+   子层 2:  x = x + 0 = x              shortcut = MoE(LN₁(x)) ≠ 0  ← 非零!
+   子层 3:  x = x + 0 = x
+   子层 4:  x = x + 0 + shortcut = x + shortcut ≠ x             ← 非恒等!
+   ```
+
+   快捷连接从子层 2 提取 MoE 输出，跨越子层 3 后注入子层 4。即使将新层的所有 `o_proj` 和 `down_proj` 置零，子层 2 的 MoE 路由计算仍会产生非零的 `shortcut` 值——因为 Router 自身的分类器权重并未置零，且路由后的 expert 加权求和即使每个 expert 的 `down_proj=0` 输出为零，Router 本身的计算路径（`classifier` → `topk` → `gate` → `softmax`）并不经过被置零的参数。
+
+   **影响**：
+   - `verify_expanded_weights.py`（权重结构检查）**通过**——所有置零参数确实为零
+   - `verify_model_output.py`（端到端功能检查）**不通过**——Chat 模型因体积过大（原始 562 GB，扩展后 1.3–2.5 TB）暂未运行端到端验证（NPU 仅 61 GB），但架构层面与 Lite 模型完全一致，故推断存在相同偏差
+   - Lite 实测：max_abs_diff ≈ 15（+4 层）≈ 30（+14 层），误差随恒等层数量**线性累积**
+   - `cos_sim` 保持在高位（0.96–0.99），输出方向高度相关，可用于训练初始化
+
+   **适用场景**：尽管不是严格函数保持，扩展模型仍可用于后续训练——恒等层的输出与输入高度相关（cos_sim > 0.96），可作为良好的初始化起点。若需要严格函数保持的深度扩展，需针对 LongCat 架构修改恒等初始化逻辑（同时将 shortcut 路径中的 MoE Router 输出也归零，或重构残差连接）。

@@ -32,7 +32,7 @@ EXP_DIR="${3:-}"
 shift 3 || true # Shift out the first 3 positional args, keep remaining in $@
 
 if [[ -z "$TYPE" || -z "$ORIG_DIR" || -z "$EXP_DIR" ]]; then
-    echo "Usage: bash $0 <layers|experts> <orig_dir> <exp_dir> [additional_args...]"
+    echo "Usage: bash $0 <layers|experts|combined> <orig_dir> <exp_dir> [additional_args...]"
     exit 1
 fi
 
