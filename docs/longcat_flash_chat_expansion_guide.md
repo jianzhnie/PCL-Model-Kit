@@ -307,10 +307,13 @@ bash scripts/verify_expanded_weights.sh layers \
 bash scripts/verify_expanded_weights.sh combined \
     /path/to/LongCat-Flash-Chat \
     /path/to/LongCat-Flash-Chat-combined \
-    --orig_layers 28 --target_layers 32 --insertion_mode interleave
+    --orig_layers 28 --target_layers 32 \
+    --copy_source "7,14,21,27" --insertion_mode interleave
 ```
 
 验证内容：同时检查层映射 + 专家复制 + 恒等初始化。
+
+> **注意**: 如果使用了非默认的 `COPY_SOURCE`（如 `"6,13,20,26"`），验证时必须传入相同的 `--copy_source` 值，否则层映射将不匹配。
 
 ### 模型输出功能验证
 
@@ -326,6 +329,13 @@ python3 utils/verify_model_output.py \
 ```
 
 > **注意**: NPU 仅 61 GB 内存，无法容纳 Chat 模型（562 GB float32）。如有大容量 CPU 内存环境（>1.5 TB）可尝试 CPU 推理验证。
+
+| 验证方式 | 速度 | 覆盖范围 |
+|---------|------|---------|
+| `verify_expanded_weights.py` | 快（直接读取 safetensors） | 权重结构正确性 |
+| `verify_model_output.py` | 慢（加载完整模型推理） | 端到端功能正确性 |
+
+两者互补：权重验证通过但推理失败说明模型架构代码存在兼容性问题。
 
 ---
 

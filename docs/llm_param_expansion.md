@@ -138,6 +138,8 @@ new_block.mlp.down_proj.weight.data.zero_()       # MLP 输出 → 零
 
 **原理**：Transformer block 的输出通过残差连接计算 `output = input + Block(input)`。LLaMA-Pro 复制一个原始 block，然后将其 Attention 输出投影 `o_proj` 和 MLP 输出投影 `down_proj` 的权重全部置零。这样新 block 对任意输入都输出零向量，从而 `output = input`，实现严格的恒等映射。扩展后模型在初始时刻与原始模型函数完全一致，因此 zero-shot 精度**零损失**。
 
+> **⚠️ 限制**：上述恒等映射假设标准 Transformer 残差结构（`x = x + Attn + FFN`）。对于具有非标准残差路径的架构（如 LongCat-Flash 的双注意力 + 双 MLP + shortcut 连接），恒等层插入**不是严格函数保持的**（实测 cos_sim ≈ 0.96–0.997），详见 [LongCat-Flash-Lite 扩展指南](longcat_flash_lite_expansion_guide.md) 注意事项第 6 条。
+
 **训练策略（两阶段）**：
 
 | 阶段           | 训练参数        | 数据量          | 学习率  | GPU 时间                         |
@@ -581,10 +583,11 @@ graph LR
 
 **关键要点**：
 
-- 新插入的 MoE 层中，**所有专家的 down\_proj 初始化为零** → 恒等映射
+- 新插入的 MoE 层中，**所有专家的 down\_proj 初始化为零** → 恒等映射（标准架构）
 - Attention 部分的 o\_proj 同样初始化为零
 - 专家数量与原始层保持一致
 - 推理延迟线性增加（与 Dense 深度扩展一致）
+- **注意**: 上述恒等映射假设标准残差结构。LongCat-Flash 系列模型的非标准 shortcut 路径会使恒等初始化仅近似保持（cos_sim > 0.96），详见 [扩展指南](longcat_flash_lite_expansion_guide.md)
 
 ***
 
@@ -945,14 +948,14 @@ Step 3: 少量 SFT 对齐
 
 | 研究方向                              | 已实现的脚本                                  | 能力说明                                    |
 | --------------------------------- | --------------------------------------- | --------------------------------------- |
-| 深度扩展（DUS / 简单复制）                  | `utils/expand_model_layers.py`          | 按指定规则复制已有层，支持 sequential / 固定源层 / 自定义映射 |
+| 深度扩展（DUS / 恒等初始化 M2）            | `utils/expand_moe_depth.py`             | 按指定规则复制已有层并置零 o_proj/down_proj，支持 interleave/append |
 | MoE 专家扩展（Dense→MoE / MoE 基座扩展 M1） | `utils/expand_moe_experts.py`           | 将 Dense FFN 或已有 MoE 的专家数按倍数扩展，支持加噪打破对称性 |
 | Grouped Expert Routing 扩展         | `scripts/expand_model_experts_group.sh` | 针对 grouped expert routing 结构的专家扩展与配置生成  |
 | 权重一致性校验                           | `utils/verify_expanded_weights.py`      | 校验扩展后模型是否保留原始层/原始专家权重                   |
 
 **落地建议**：
 
-1. 若选择 **LLaMA-Pro / MoE 深度扩展（M2）**：当前 `expand_model_layers.py` 仅做简单复制，需在复制后将新块/新层的 `o_proj` / `down_proj` 置零，才能实现恒等映射
+1. 若选择 **LLaMA-Pro / MoE 深度扩展（M2）**：可使用 `utils/expand_moe_depth.py`，其已实现恒等初始化（将新层的 `o_proj` / `down_proj` 自动置零），支持 interleave / append 插入模式。注意：LongCat-Flash 架构因 shortcut 连接限制，恒等初始化仅近似保持
 2. 若选择 **MSG / M3 专家宽度扩展**：仓库尚未实现宽度/FFN 的掩码生长，需要新增按维度零填充与渐进解锁逻辑
 3. 若选择 **MoE Upcycling / M1 专家数扩展**：可直接使用 `expand_moe_experts.py` 将 FFN 或已有专家复制为多份，并通过 `--router-noise-scale` / `--expert-noise-scale` 等参数打破对称性，再补充 Router 训练与 load balancing loss
 4. 无论哪种方案，扩展后先用 `verify_expanded_weights.py` 验证原始参数未被意外修改

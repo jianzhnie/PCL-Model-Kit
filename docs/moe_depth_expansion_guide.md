@@ -8,6 +8,8 @@
 
 MoE 层深度扩展（方案 M2）通过在已有 MoE 层之间插入**恒等初始化**的新层来增加模型深度。新层在初始化时满足 `Layer(x) = x`，因此扩展后的模型与原模型在前向传播上**完全等价**（function-preserving），不会产生任何精度损失。
 
+> **⚠️ 架构限制**: 上述恒等映射假设标准 Transformer 残差结构（`x = x + Attn(LN(x)) + FFN(LN(x))`）。对于 **LongCat-Flash 系列**模型（Lite / Chat），其 Decoder Layer 使用了双并行注意力头 + 双并行 MLP + 快捷连接（shortcut）的非标准残差路径，导致恒等层插入**不是严格函数保持的**（实测 max_abs_diff ≈ 15–30，cos_sim ≈ 0.96–0.997）。详见 [LongCat-Flash-Lite 扩展指南](longcat_flash_lite_expansion_guide.md) 和 [LongCat-Flash-Chat 扩展指南](longcat_flash_chat_expansion_guide.md) 的注意事项第 6 条。
+
 ### 恒等映射原理
 
 Transformer 层的输出通过残差连接计算：
@@ -42,11 +44,11 @@ LongCat-Flash-Chat 每层结构：
 |------|------|-------------|
 | `self_attn.0.o_proj.weight` | MLA 注意力输出 | → 置零 |
 | `self_attn.1.o_proj.weight` | MLA 注意力输出 | → 置零 |
-| `mlp.experts.{0..767}.down_proj.weight` | 768 个专家输出 | → 置零 |
+| `mlp.experts.{0..511}.down_proj.weight` | 512 个专家输出 | → 置零 |
 | `mlps.{0,1}.down_proj.weight` | 共享 MLP 输出 | → 置零 |
 | 其余所有权重 | 输入投影、归一化等 | → 从源层复制 |
 
-每个新层共 772 个张量置零，1558 个张量从源层复制。
+每个新层共 516 个张量置零，1,302 个张量从源层复制。
 
 ### 扩展结构示意
 
@@ -98,8 +100,10 @@ python -m utils.expand_moe_depth \
 | 方案 | 参数增长 | 推理延迟 | Function Preserving | 适用场景 |
 |------|---------|---------|:---:|---------|
 | **M1: 专家数扩展** | 线性 ×m | 近似不变 | 需对称性破坏 | 推理成本受限 |
-| **M2: 深度扩展** | 线性 ×层数 | 线性增加 | ✓ | 表达力优先、精度保持 |
+| **M2: 深度扩展** | 线性 ×层数 | 线性增加 | ⚠️ 近似保持[[1]](#fn1) | 表达力优先、精度保持 |
 | M3: 专家宽度扩展 | ~平方增 | 增加 | ✓ | 单专家能力增强 |
+
+<a id="fn1">[1]</a>: 对于标准 Transformer（2 子层）架构为严格函数保持；对于 LongCat-Flash 系列（双注意力 + 双 MLP + shortcut），由于 shortcut 绕过置零参数，恒等初始化仅近似保持（实测 cos_sim > 0.96），详见 [LongCat 扩展指南](longcat_flash_lite_expansion_guide.md) 注意事项第 6 条。
 
 ---
 
@@ -137,6 +141,7 @@ python -m utils.expand_moe_depth \
 | `--target_layers` | 2×原始 | 目标总层数 |
 | `--copy_source` | `seq` | 新层来源：`seq`=循环复制, `5`=全部复制第5层, `0,0,1,1,...`=逐一指定 |
 | `--insertion_mode` | `interleave` | `interleave`=交错插入, `append`=追加到末尾 |
+| `--workers` | `1` | 并行写入 worker 数（推荐 4–16） |
 
 ### LongCat-Flash-Chat 扩展示例
 
@@ -144,7 +149,7 @@ python -m utils.expand_moe_depth \
 
 ```bash
 python -m utils.expand_moe_depth \
-    --model_dir /Users/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat \
+    --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/LongCat-Flash-Chat-56L \
     --target_layers 56 \
     --insertion_mode interleave
@@ -182,7 +187,7 @@ LongCat-Flash-Lite 每层结构：
 
 ```bash
 python -m utils.expand_moe_depth \
-    --model_dir /Users/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat \
+    --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/LongCat-Flash-Chat-42L \
     --target_layers 42 \
     --copy_source "0,2,4,6,8,10,12,14,16,18,20,22,24,26" \
@@ -195,7 +200,7 @@ python -m utils.expand_moe_depth \
 
 ```bash
 python -m utils.expand_moe_depth \
-    --model_dir /Users/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat \
+    --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/LongCat-Flash-Chat-42L \
     --target_layers 42 \
     --copy_source "10,11,12,13,14,15,16,17,18,19,20,21,22,23" \
@@ -209,7 +214,7 @@ python -m utils.expand_moe_depth \
 ### 运行自动化测试
 
 ```bash
-python -m utils.test_expand_moe_depth
+pytest tests/test_expand_moe_depth.py -v
 ```
 
 ### 使用 verify_expanded_weights.py
@@ -296,7 +301,7 @@ assert torch.all(expanded[key] == 0), "expert down_proj should be zero"
 ```
 utils/
 ├── expand_moe_depth.py        # M2 深度扩展主脚本
-├── test_expand_moe_depth.py   # 综合验证测试
+├── tests/test_expand_moe_depth.py   # 综合验证测试
 ├── expand_moe_experts.py      # M1 专家数扩展（参考实现）
 ├── expand_model_layers.py     # 简单层复制（无恒等初始化）
 ├── verify_expanded_weights.py # 权重一致性校验

@@ -139,7 +139,6 @@ def expand_config(
             if key in new_config:
                 new_config[key] = target_topk
                 topk_set = True
-                break
         if not topk_set:
             new_config["moe_topk"] = target_topk
 

@@ -149,7 +149,7 @@ python -m utils.expand_moe_experts \
 
 ```bash
 python -m utils.expand_moe_experts \
-    --model_dir /Users/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat \
+    --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/LongCat-Flash-Chat-1024E \
     --target_experts 1024 \
     --router-noise-scale 1e-6 \
@@ -191,7 +191,7 @@ TARGET_EXPERTS=768 bash scripts/expand_longcat_lite_experts.sh
 
 ```bash
 python -m utils.expand_moe_experts \
-    --model_dir /Users/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat \
+    --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/LongCat-Flash-Chat-1024E-top24 \
     --target_experts 1024 \
     --target_topk 24 \
@@ -203,7 +203,7 @@ python -m utils.expand_moe_experts \
 
 ```bash
 python -m utils.expand_moe_experts \
-    --model_dir /Users/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat \
+    --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/LongCat-Flash-Chat-1024E-grouped \
     --target_experts 1024 \
     --use_group_routing \
@@ -215,7 +215,7 @@ python -m utils.expand_moe_experts \
 
 ```bash
 python -m utils.expand_moe_experts \
-    --model_dir /Users/robin/hfhub/models/meituan-longcat/LongCat-Flash-Chat \
+    --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/LongCat-Flash-Chat-2048E \
     --target_experts 2048 \
     --router-noise-scale 1e-6 \
