@@ -131,7 +131,7 @@ output = input + Attention(Norm(input)) + MLP(Norm(...))
 
 ```bash
 # 在层 7, 14, 21, 27 后面各插入一个恒等层
-python -m utils.expand_moe_depth \
+PYTHONPATH=/path/to/PCL-Model-Kit python3 utils/expand_moe_depth.py \
     --model_dir /path/to/LongCat-Flash-Chat \
     --output_dir /path/to/output \
     --target_layers 32 \

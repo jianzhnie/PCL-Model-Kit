@@ -534,7 +534,7 @@ def main():
     parser.add_argument("--insertion_mode",
                         type=str,
                         choices=["interleave", "append"],
-                        default="append",
+                        default="interleave",
                         help="Layer insertion mode used during expansion")
     parser.add_argument("--router_suffixes",
                         type=str,
