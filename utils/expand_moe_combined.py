@@ -121,12 +121,14 @@ def expand_tensor(
         _, expert_idx, rest = expert_info
         if expert_idx < original_experts:
             # Routed expert: keep original + duplicate copies
-            for tgt_layer in target_layers:
+            for i, tgt_layer in enumerate(target_layers):
                 is_new = tgt_layer in new_layer_set
 
                 orig_key = make_expert_key(tgt_layer, expert_idx, rest)
                 if is_new and should_zero(orig_key):
                     results[orig_key] = torch.zeros_like(tensor)
+                elif i == 0 and len(target_layers) == 1:
+                    results[orig_key] = tensor  # single-output: reference safe
                 else:
                     results[orig_key] = tensor.clone()
 
@@ -143,11 +145,13 @@ def expand_tensor(
             # Zero expert: remap index and duplicate copies
             zero_offset = expert_idx - original_experts
             base_new_idx = target_experts + zero_offset
-            for tgt_layer in target_layers:
+            for i, tgt_layer in enumerate(target_layers):
                 is_new = tgt_layer in new_layer_set
                 base_key = make_expert_key(tgt_layer, base_new_idx, rest)
                 if is_new and should_zero(base_key):
                     results[base_key] = torch.zeros_like(tensor)
+                elif i == 0 and len(target_layers) == 1:
+                    results[base_key] = tensor  # single-output: reference safe
                 else:
                     results[base_key] = tensor.clone()
 
@@ -161,11 +165,14 @@ def expand_tensor(
         return results
 
     # Regular layer params (attention, norms, etc.)
-    for tgt_layer in target_layers:
+    for i, tgt_layer in enumerate(target_layers):
         tgt_key = set_layer_index(key, tgt_layer)
         is_new = tgt_layer in new_layer_set
         if is_new and should_zero(tgt_key):
             results[tgt_key] = torch.zeros_like(tensor)
+        elif i == 0 and len(target_layers) == 1:
+            # Single-output kept layer: reference saves memory vs clone
+            results[tgt_key] = tensor
         else:
             results[tgt_key] = tensor.clone()
 

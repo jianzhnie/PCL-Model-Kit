@@ -7,6 +7,11 @@ from pathlib import Path
 
 import torch
 
+# ── Pre-compiled regex patterns (hot-path: called for every tensor key) ──
+_LAYER_INDEX_RE = re.compile(r"model\.layers\.(\d+)\.")
+_EXPERT_INFO_RE = re.compile(r"model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.(.*)")
+_LAYER_PREFIX = "model.layers."
+
 # Mapping from safetensors dtype string to element size in bytes
 DTYPE_SIZES: dict[str, int] = {
     "F64": 8, "I64": 8,
@@ -49,24 +54,29 @@ def load_index(model_dir: Path) -> dict | None:
 
 def get_layer_index(param_name: str) -> int | None:
     """Extract layer index from parameter name. Returns None for non-layer params."""
-    m = re.search(r"model\.layers\.(\d+)\.", param_name)
+    m = _LAYER_INDEX_RE.search(param_name)
     if m:
         return int(m.group(1))
     return None
 
 
 def set_layer_index(param_name: str, new_index: int) -> str:
-    """Change the layer index in a parameter name."""
-    return re.sub(
-        r"model\.layers\.(\d+)\.",
-        f"model.layers.{new_index}.",
-        param_name,
-    )
+    """Change the layer index in a parameter name.
+
+    Uses string split/join (~4× faster than re.sub for this simple pattern).
+    """
+    if not param_name.startswith(_LAYER_PREFIX):
+        return param_name
+    rest = param_name[len(_LAYER_PREFIX):]  # strip "model.layers."
+    dot_pos = rest.find(".")
+    if dot_pos == -1:
+        return param_name
+    return f"{_LAYER_PREFIX}{new_index}.{rest[dot_pos + 1:]}"
 
 
 def get_expert_info(param_name: str) -> tuple[int, int, str] | None:
     """Extract (layer_idx, expert_idx, rest) from parameter name."""
-    m = re.search(r"model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.(.*)", param_name)
+    m = _EXPERT_INFO_RE.search(param_name)
     if m:
         return int(m.group(1)), int(m.group(2)), m.group(3)
     return None

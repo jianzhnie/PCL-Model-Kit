@@ -191,7 +191,7 @@ def _expand_tensor(
         layer_idx, expert_idx, rest = info
         result: dict[str, torch.Tensor] = {}
         if expert_idx < original_experts:
-            result[key] = tensor.clone()
+            result[key] = tensor  # reference: copies below are independent tensors
             for new_expert_idx in source_to_targets.get(expert_idx, []):
                 new_key = make_expert_key(layer_idx, new_expert_idx, rest)
                 if expert_noise_scale > 0:
