@@ -97,22 +97,23 @@ def expand_tensor(
 
     results: dict[str, torch.Tensor] = {}
 
-    # Pre-expand router tensors once per source layer
-    router_expanded = None
+    # Router tensors: expand independently per target layer so that serial and
+    # parallel paths are consistent (each call to expand_router_weight may add
+    # random noise when router_noise_scale > 0).
     if is_router_weight(key):
-        router_expanded = expand_router_weight(
-            tensor, original_experts, zero_expert_num,
-            expansion_factor, router_noise_scale,
-        )
-    elif is_router_bias(key):
-        router_expanded = expand_router_bias(
-            tensor, original_experts, zero_expert_num, expansion_factor,
-        )
-
-    if router_expanded is not None:
-        for i, tgt_layer in enumerate(target_layers):
+        for tgt_layer in target_layers:
             tgt_key = set_layer_index(key, tgt_layer)
-            results[tgt_key] = router_expanded if i == 0 else router_expanded.clone()
+            results[tgt_key] = expand_router_weight(
+                tensor, original_experts, zero_expert_num,
+                expansion_factor, router_noise_scale,
+            )
+        return results
+    if is_router_bias(key):
+        for tgt_layer in target_layers:
+            tgt_key = set_layer_index(key, tgt_layer)
+            results[tgt_key] = expand_router_bias(
+                tensor, original_experts, zero_expert_num, expansion_factor,
+            )
         return results
 
     # Expert weights: need both layer and expert expansion
