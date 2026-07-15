@@ -306,7 +306,7 @@ def pre_scan_assignments(
     target_experts: int,
     expert_noise_scale: float = 0.0,
     max_layers_per_shard: int = 1,
-) -> tuple[dict[int, list[tuple[str, str, str, str]]], int, int, int, int]:
+) -> tuple[dict[int, list[tuple[str, str, str, int, str]]], int, int, int, int]:
     """Scan all shard headers, sort by layer, assign to layer-grouped output shards.
 
     Returns (assignments, num_output_shards, total_output_bytes,
@@ -362,7 +362,7 @@ def _write_output_shard(args):
 
     model_dir = Path(model_dir_str)
     by_input: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
-    for sfile, in_key, out_key, action in assignments:
+    for sfile, in_key, out_key, _, action in assignments:
         by_input[sfile].append((in_key, out_key, action))
 
     tensors: dict[str, torch.Tensor] = {}
@@ -641,7 +641,7 @@ def main():
     )
     zeroed_count = sum(
         1 for items in assignments_by_shard.values()
-        for _, _, _, action in items if action == "zero"
+        for _, _, _, _, action in items if action == "zero"
     )
     print(f"Output: {total_original:,} original + {total_duplicated:,} expanded "
           f"= {total_original + total_duplicated:,} tensors "

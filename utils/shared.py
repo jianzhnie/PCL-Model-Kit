@@ -387,7 +387,7 @@ def assign_shards_layer_aware(
     items: list[tuple],
     target_shard_size: int,
     max_layers_per_shard: int = 1,
-) -> tuple[dict[int, list[tuple[str, str, str, str]]], int, int]:
+) -> tuple[dict[int, list[tuple[str, str, str, int, str]]], int, int]:
     """Assign output tensors to shards, limiting the number of layers per shard.
 
     Items should be pre-sorted by layer (via :func:`layer_sort_key`) for
@@ -412,7 +412,7 @@ def assign_shards_layer_aware(
       - A warning is emitted once; the tensor is placed in its own shard.
 
     Returns ``(assignments, num_shards, total_bytes)`` where *assignments*
-    maps shard index → list of ``(input_shard, input_key, output_key, action)``.
+    maps shard index → list of ``(input_shard, input_key, output_key, output_nbytes, action)``.
     """
     import warnings
 
@@ -424,7 +424,7 @@ def assign_shards_layer_aware(
     current_layers: set[int] = set()
     current_modules: set[str] = set()
     total_bytes = 0
-    assignments: dict[int, list[tuple[str, str, str, str]]] = defaultdict(list)
+    assignments: dict[int, list[tuple[str, str, str, int, str]]] = defaultdict(list)
     warned_once = False
 
     for input_shard, input_key, output_key, output_nbytes, action in items:
@@ -469,10 +469,13 @@ def assign_shards_layer_aware(
         # ── Size-based splitting ──────────────────────────────────────────
         if not new_shard and current_bytes + output_nbytes > target_shard_size and current_bytes > 0:
             if layer_idx is not None:
-                new_shard = True       # layer params: obey size limit
-            elif module is not None and module not in current_modules:
-                new_shard = True       # non-layer: split on module change only
-            # else: same non-layer module — stay together, exceed size limit
+                new_shard = True       # layer params: strictly obey size limit
+            else:
+                # Non-layer: same module stays together, but cap at 1.5×
+                # target to avoid single giant shards when the module has
+                # many large tensors (e.g. ngram embeddings with 12×5 GB).
+                if current_bytes + output_nbytes > int(target_shard_size * 1.5):
+                    new_shard = True
 
         # ── Apply ─────────────────────────────────────────────────────────
         if new_shard:
@@ -482,7 +485,7 @@ def assign_shards_layer_aware(
             current_modules = set()
 
         assignments[current_shard].append(
-            (input_shard, input_key, output_key, action))
+            (input_shard, input_key, output_key, output_nbytes, action))
         current_bytes += output_nbytes
         if layer_idx is not None:
             current_layers.add(layer_idx)
