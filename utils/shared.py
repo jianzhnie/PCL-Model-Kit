@@ -338,3 +338,154 @@ def should_zero(param_name: str) -> bool:
         if pat.search(param_name):
             return True
     return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Layer-aware shard assignment
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _layer_group(key: str) -> int:
+    """Return the layer group for a parameter key.
+
+    Non-layer params (embed, lm_head, norm) get group -1 so they are
+    packed together in their own shard(s), separate from layer weights.
+    """
+    li = get_layer_index(key)
+    return li if li is not None else -1
+
+
+def _module_group(key: str) -> str:
+    """Return the module family for a non-layer parameter key.
+
+    For non-layer params (group == -1), group by the top-level module name
+    so that embed_tokens, lm_head, norm etc. each stay in their own shard
+    and are not mixed together.
+    """
+    # Layer params: use layer index as group (already handled by _layer_group)
+    li = get_layer_index(key)
+    if li is not None:
+        return str(li)
+
+    # Non-layer params: group by top-level module name
+    if key.startswith("model."):
+        # e.g. "model.embed_tokens.weight" -> "embed_tokens"
+        # e.g. "model.norm.weight" -> "norm"
+        rest = key[6:]  # strip "model."
+        dot_pos = rest.find(".")
+        if dot_pos != -1:
+            return rest[:dot_pos]
+    # Fallback: use the full key (should not happen for standard models)
+    return key
+
+
+def layer_sort_key(output_key: str) -> tuple[int, str]:
+    """Sort key for layer-aware ordering: non-layer first, then by layer, then by name."""
+    return (_layer_group(output_key), output_key)
+
+
+def assign_shards_layer_aware(
+    items: list[tuple],
+    target_shard_size: int,
+    max_layers_per_shard: int = 1,
+) -> tuple[dict[int, list[tuple[str, str, str, str]]], int, int]:
+    """Assign output tensors to shards, limiting the number of layers per shard.
+
+    Items should be pre-sorted by layer (via :func:`layer_sort_key`) for
+    optimal grouping.  Each tuple is ``(input_shard, input_key, output_key,
+    output_nbytes, action)``.
+
+    A new shard is started when:
+    * Adding a tensor from a new layer would exceed ``max_layers_per_shard``
+    * The current shard would exceed ``target_shard_size``
+    * A single tensor exceeds ``target_shard_size`` (warn and force into its
+      own shard)
+    * Adding a tensor from a different non-layer module (e.g. embed_tokens vs
+      lm_head) would mix different modules in the same shard
+
+    Non-layer tensors are grouped by module family (embed_tokens, lm_head,
+    norm, etc.) so that each module's tensors stay together in the same
+    shard, matching the original model's file organization.
+
+    Returns ``(assignments, num_shards, total_bytes)`` where *assignments*
+    maps shard index → list of ``(input_shard, input_key, output_key, action)``.
+    """
+    import warnings
+
+    current_shard = 0
+    current_bytes = 0
+    current_groups: set[int | str] = set()
+    total_bytes = 0
+    assignments: dict[int, list[tuple[str, str, str, str]]] = defaultdict(list)
+    warned_once = False
+
+    for input_shard, input_key, output_key, output_nbytes, action in items:
+        group = _layer_group(output_key)
+        module = _module_group(output_key)
+
+        # Warn when a single tensor is larger than the target shard size.
+        # This can happen after router expansion (e.g. [768, 6144] -> [1536, 6144])
+        # or with very large embedding tables.  We still place the tensor, but it
+        # will occupy a shard by itself (or force the current shard to exceed
+        # the target).
+        if output_nbytes > target_shard_size and not warned_once:
+            warnings.warn(
+                f"Tensor {output_key!r} ({output_nbytes / 1e9:.2f} GB) exceeds "
+                f"target shard size ({target_shard_size / 1e9:.2f} GB). "
+                f"It will be placed in a shard by itself. "
+                f"Consider increasing target shard size or using a smaller model.",
+                UserWarning,
+                stacklevel=3,
+            )
+            warned_once = True
+
+        # Decide whether we need a new shard
+        new_shard = False
+        if current_bytes > 0:
+            # Check if current shard contains any layer groups (int >= 0)
+            has_layer_group = any(isinstance(g, int) and g >= 0 for g in current_groups)
+            # Check if current shard contains any non-layer groups (str, i.e. module names)
+            has_nonlayer_group = any(isinstance(g, str) for g in current_groups)
+
+            if group >= 0 and group not in current_groups:
+                # Real layer group that is not yet in the current shard
+                if len(current_groups) >= max_layers_per_shard:
+                    new_shard = True
+                elif has_nonlayer_group:
+                    # Cannot mix real layer with non-layer tensors
+                    new_shard = True
+            elif group == -1 and len(current_groups) > 0:
+                # Non-layer tensors: check if this is a different module family
+                # We allow multiple non-layer tensors from the SAME module
+                # (e.g. embed_tokens.weight + embed_tokens.bias) in one shard,
+                # but do NOT mix different modules (e.g. embed_tokens + lm_head).
+                if has_layer_group:
+                    # Cannot mix non-layer with real layer tensors
+                    new_shard = True
+                elif module not in current_groups:
+                    # Different non-layer module family (e.g. embed_tokens vs lm_head)
+                    new_shard = True
+
+        if not new_shard and current_bytes + output_nbytes > target_shard_size and current_bytes > 0:
+            # Non-layer params: only split if this is a different module family.
+            # Same module's tensors stay together even if they exceed target size.
+            if group == -1:
+                if module not in current_groups:
+                    new_shard = True
+            else:
+                new_shard = True
+
+        if new_shard:
+            current_shard += 1
+            current_bytes = 0
+            current_groups = set()
+
+        assignments[current_shard].append(
+            (input_shard, input_key, output_key, action))
+        current_bytes += output_nbytes
+        # Use module name for non-layer groups so that _module_group is the
+        # grouping key (embed_tokens, lm_head, norm, etc.)
+        current_groups.add(module if group == -1 else group)
+        total_bytes += output_nbytes
+
+    num_shards = current_shard + 1 if assignments else 0
+    return dict(assignments), num_shards, total_bytes

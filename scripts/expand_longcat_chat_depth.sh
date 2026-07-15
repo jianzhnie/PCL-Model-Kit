@@ -13,7 +13,8 @@
 #   TARGET_LAYERS  - target layer count (default: 32)
 #   COPY_SOURCE    - source mapping (default: 7,14,21,27)
 #   INSERTION_MODE - interleave or append (default: interleave)
-#   WORKERS        - parallel workers (default: 4)
+#   WORKERS                 - parallel workers (default: 4)
+#   MAX_LAYERS_PER_SHARD    - max layers per shard (default: 1)
 
 set -euo pipefail
 
@@ -27,6 +28,7 @@ TARGET_LAYERS="${TARGET_LAYERS:-32}"
 COPY_SOURCE="${COPY_SOURCE:-7,14,21,27}"
 INSERTION_MODE="${INSERTION_MODE:-interleave}"
 WORKERS="${WORKERS:-4}"
+MAX_LAYERS_PER_SHARD="${MAX_LAYERS_PER_SHARD:-1}"
 
 if [[ ! -d "$MODEL_DIR" ]]; then
     echo "ERROR: Model directory not found: $MODEL_DIR"
@@ -55,6 +57,7 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
 
 [[ -n "$COPY_SOURCE" ]] && CMD+=(--copy_source "$COPY_SOURCE")
 [[ -n "$WORKERS" ]] && CMD+=(--workers "$WORKERS")
+[[ -n "$MAX_LAYERS_PER_SHARD" ]] && CMD+=(--max_layers_per_shard "$MAX_LAYERS_PER_SHARD")
 
 "${CMD[@]}"
 

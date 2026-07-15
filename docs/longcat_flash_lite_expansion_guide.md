@@ -412,6 +412,20 @@ TARGET_TOPK=24 bash scripts/expand_longcat_lite_combined.sh
 INSERTION_MODE=append bash scripts/expand_longcat_lite_depth.sh
 ```
 
+### 控制分片的 layer 聚合度
+
+默认 `--max_layers_per_shard=1` 确保每个 safetensors 文件只包含一个 layer 的权重（非 layer 参数单独存放），便于分布式加载和后续处理：
+
+```bash
+# 默认：每个 shard 最多 1 个 layer
+bash scripts/expand_longcat_lite_combined.sh
+
+# 允许每个 shard 包含 2 个 layer（减少 shard 数量，但 layer 分散度增加）
+MAX_LAYERS_PER_SHARD=2 bash scripts/expand_longcat_lite_combined.sh
+```
+
+> 原始模型每分片固定 2 个 layer。扩展后使用 `--max_layers_per_shard=1` 可将分散度从 10-16 个文件/layer 优化到 1 个文件/layer。
+
 ---
 
 ## 六、方案对比
@@ -446,7 +460,98 @@ INSERTION_MODE=append bash scripts/expand_longcat_lite_depth.sh
 | `utils/expand_moe_combined.py` | M1+M2 联合扩展核心逻辑 |
 | `utils/verify_expanded_weights.py` | 权重验证（layers/experts/combined 三种模式）|
 | `utils/verify_model_output.py` | 功能验证（前向 logit 比较 + 生成 token 比较）|
+| `utils/analyze_shard_layout.py` | safetensors 分片布局分析（layer 分布、分散度等）|
 | `utils/shared.py` | 共享工具：`build_layer_mapping`、`should_zero`、`expand_router_weight` 等 |
+
+### 分片布局分析工具
+
+`analyze_shard_layout.py` 用于分析模型的 safetensors 分片布局，提供**健康评分**、layer 分布矩阵、分散度图表、大小直方图等多维度诊断信息。
+
+```bash
+# 分析原始模型（完整报告）
+python3 utils/analyze_shard_layout.py /path/to/LongCat-Flash-Lite
+
+# 分析扩展后模型，显示更多分片示例
+python3 utils/analyze_shard_layout.py /path/to/LongCat-Flash-Lite-combined --top 10
+
+# 仅输出 JSON 数据（用于脚本解析）
+python3 utils/analyze_shard_layout.py /path/to/model --json > report.json
+
+# 不显示 Layer→Shard 映射矩阵（适合层数很多的模型）
+python3 utils/analyze_shard_layout.py /path/to/model --no-matrix
+```
+
+#### 报告内容概览
+
+运行工具后会输出一份完整的分片布局诊断报告，包含以下核心模块：
+
+1. **健康评分 (0-100)**：综合评估分片布局质量
+   - 🟢 良好 (≥80)：单层分片、低分散度、大小均匀
+   - 🟡 一般 (50-79)：部分指标需优化
+   - 🔴 需优化 (<50)：分散严重或大小差异大，建议重新扩展
+
+2. **五维指标表**：
+   | 指标 | 说明 | 理想值 |
+   |------|------|--------|
+   | 每分片层数 | 每个 safetensors 文件包含多少 layer | 1 层/分片 |
+   | 层连续性 | layer 编号在分片内是否连续 | 连续 |
+   | 分散度 | 每个 layer 的权重分布在多少个文件中 | 1-3 文件/layer |
+   | 大小均匀 | 各分片文件大小差异 | max/min < 1.5× |
+   | 非层参数 | `embed_tokens`、`norm` 等是否独立存放 | 独立 |
+
+3. **Layer → Shard 映射矩阵**：ASCII 可视化网格，直观展示每个 layer 的权重分布在哪些分片中
+   - 纵轴 = layer 编号，横轴 = safetensors 分片文件
+   - `█` = 该 layer 的权重存在该分片中，`·` = 无权重
+
+4. **分片大小直方图**：展示各分片文件大小的分布区间
+
+5. **Layer 分散度图表**：每个 layer 跨越多少个分片文件的柱状图（层数 ≤40 时显示）
+
+6. **综合评估**：自动列出 ✅ 优点 和 ❌ 问题，并给出优化建议
+
+#### 示例输出解读
+
+原始 LongCat-Flash-Lite（26 shards）的典型报告节选：
+
+```
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    safetensors 分片布局分析报告                             ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║  模型: /path/to/LongCat-Flash-Lite                                          ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║  分片: 26 个文件              参数: 11,160 个           大小: 138.2 GB    ║
+╠════════════════════════════════════════════════════════════════════════════╣
+║  健康评分:  65/100  🟡 一般    ██████████████████████████████             ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
+│ 每分片层数  │  层连续性   │   分散度    │  大小均匀   │  非层参数   │
+├─────────────┼─────────────┼─────────────┼─────────────┼─────────────┤
+│ 🟡 1 层:    │ 🔴 连续:    │ 🔴 avg 5.2  │ 🟢 max/min  │ 🟢 独立: 2  │
+│ 13/26       │ 13/26       │ 文件/层     │ 1.2×        │ 混合: 0     │
+└─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
+```
+
+> 原始模型每分片固定 2 个 layer，每个 layer 分布在 5 个文件中。扩展后的模型因 size-based bin-packing 策略，layer 分散度可能达到 10-16 个文件/layer。如需优化为 layer-grouped 存储，可使用扩展脚本的 `--max_layers_per_shard` 参数（默认 1）。
+
+#### 健康评分优化建议
+
+若健康评分低于 80（🟡 或 🔴），报告会自动建议：
+
+```
+建议: 使用扩展脚本的 --max_layers_per_shard 1 重新扩展模型。
+目标: 每个 safetensors 仅含 1 个 layer，单层过大时跨 2-3 个文件。
+```
+
+对应的环境变量设置：
+
+```bash
+# 默认：每个 shard 最多 1 个 layer（推荐，健康评分可达 90+）
+bash scripts/expand_longcat_lite_combined.sh
+
+# 允许每个 shard 包含 2 个 layer（减少 shard 数量，但分散度增加）
+MAX_LAYERS_PER_SHARD=2 bash scripts/expand_longcat_lite_combined.sh
+```
 
 ---
 

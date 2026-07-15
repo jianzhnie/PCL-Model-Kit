@@ -19,6 +19,7 @@
 #   ROUTER_NOISE_SCALE      - Gaussian noise for router (default: 0)
 #   EXPERT_NOISE_SCALE      - Gaussian noise for experts (default: 0)
 #   WORKERS                 - parallel workers (default: 4)
+#   MAX_LAYERS_PER_SHARD    - max layers per shard (default: 1)
 
 set -euo pipefail
 
@@ -37,6 +38,7 @@ TARGET_TOPK="${TARGET_TOPK:-}"
 ROUTER_NOISE_SCALE="${ROUTER_NOISE_SCALE:-}"
 EXPERT_NOISE_SCALE="${EXPERT_NOISE_SCALE:-}"
 WORKERS="${WORKERS:-4}"
+MAX_LAYERS_PER_SHARD="${MAX_LAYERS_PER_SHARD:-1}"
 
 if [[ ! -d "$MODEL_DIR" ]]; then
     echo "ERROR: Model directory not found: $MODEL_DIR"
@@ -83,6 +85,7 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
 [[ -n "$EXPERT_NOISE_SCALE" ]] && \
     CMD+=(--expert-noise-scale "$EXPERT_NOISE_SCALE")
 [[ -n "$WORKERS" ]] && CMD+=(--workers "$WORKERS")
+[[ -n "$MAX_LAYERS_PER_SHARD" ]] && CMD+=(--max_layers_per_shard "$MAX_LAYERS_PER_SHARD")
 
 "${CMD[@]}"
 
