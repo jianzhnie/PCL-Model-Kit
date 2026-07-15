@@ -75,7 +75,7 @@ Router Bias (`e_score_correction_bias`) 同理: `[384] → [768]`。
 
 ```
 原始: 11,160 个参数,  26 shards, 138.2 GB
-扩展: 21,912 个参数,  41 shards (--max_layers_per_shard=1), 205.9 GB
+扩展: 21,912 个参数,  44 shards (--max_layers_per_shard=1), 205.9 GB
 新增: 10,752 个张量 (256 experts × 14 layers × 3 params)
       + 14 router weight 扩展 + 14 router bias 扩展
 ```
@@ -180,7 +180,7 @@ python -m utils.expand_moe_depth \
 #### 输出概要
 
 ```
-扩展: 22,276 个参数, 41 shards (--max_layers_per_shard=1), 210.9 GB
+扩展: 22,276 个参数, 44 shards (--max_layers_per_shard=1), 210.9 GB
 新增恒等层: 14 层, 3,640 个张量置零
 ```
 
@@ -274,7 +274,7 @@ Bias 同理：`[384] → [768]`，布局 `[real×2 | zero×2]`。
 #### 输出概要
 
 ```
-扩展: 28,160 个参数, 49 shards (--max_layers_per_shard=1), 246.0 GB
+扩展: 28,160 个参数, 52 shards (--max_layers_per_shard=1), 246.0 GB
 新增恒等层: 4 层, 置零参数: 2,064 个
 ```
 
