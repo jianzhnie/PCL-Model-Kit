@@ -394,17 +394,22 @@ def assign_shards_layer_aware(
     optimal grouping.  Each tuple is ``(input_shard, input_key, output_key,
     output_nbytes, action)``.
 
-    A new shard is started when:
-    * Adding a tensor from a new layer would exceed ``max_layers_per_shard``
-    * The current shard would exceed ``target_shard_size``
-    * A single tensor exceeds ``target_shard_size`` (warn and force into its
-      own shard)
-    * Adding a tensor from a different non-layer module (e.g. embed_tokens vs
-      lm_head) would mix different modules in the same shard
+    **Sharding rules**:
 
-    Non-layer tensors are grouped by module family (embed_tokens, lm_head,
-    norm, etc.) so that each module's tensors stay together in the same
-    shard, matching the original model's file organization.
+    *Layer params* (``model.layers.N.*``):
+      - Grouped by layer index — at most ``max_layers_per_shard`` distinct
+        layers per output shard.
+      - Size-based splitting applies normally.
+
+    *Non-layer params* (embed, lm_head, norm, etc.):
+      - Separated into dedicated shards, never mixed with layer params.
+      - Grouped by *module family* so that e.g. ``embed_tokens`` and
+        ``lm_head`` each get their own shard(s), mirroring the original
+        model layout.  Tensors from the same module family stay together
+        even if they exceed ``target_shard_size``.
+
+    *Giant tensors* (single tensor > target size):
+      - A warning is emitted once; the tensor is placed in its own shard.
 
     Returns ``(assignments, num_shards, total_bytes)`` where *assignments*
     maps shard index → list of ``(input_shard, input_key, output_key, action)``.
@@ -413,20 +418,20 @@ def assign_shards_layer_aware(
 
     current_shard = 0
     current_bytes = 0
-    current_groups: set[int | str] = set()
+    # Two separate sets: layer indices (int) and module names (str).
+    # Never mixed — the sort order (non-layer first) guarantees a clean
+    # transition boundary.
+    current_layers: set[int] = set()
+    current_modules: set[str] = set()
     total_bytes = 0
     assignments: dict[int, list[tuple[str, str, str, str]]] = defaultdict(list)
     warned_once = False
 
     for input_shard, input_key, output_key, output_nbytes, action in items:
-        group = _layer_group(output_key)
-        module = _module_group(output_key)
+        layer_idx = get_layer_index(output_key)
+        module = _module_group(output_key) if layer_idx is None else None
 
-        # Warn when a single tensor is larger than the target shard size.
-        # This can happen after router expansion (e.g. [768, 6144] -> [1536, 6144])
-        # or with very large embedding tables.  We still place the tensor, but it
-        # will occupy a shard by itself (or force the current shard to exceed
-        # the target).
+        # ── Giant tensor warning ─────────────────────────────────────────
         if output_nbytes > target_shard_size and not warned_once:
             warnings.warn(
                 f"Tensor {output_key!r} ({output_nbytes / 1e9:.2f} GB) exceeds "
@@ -438,53 +443,51 @@ def assign_shards_layer_aware(
             )
             warned_once = True
 
-        # Decide whether we need a new shard
+        # ── Decide: start a new shard? ────────────────────────────────────
         new_shard = False
+
         if current_bytes > 0:
-            # Check if current shard contains any layer groups (int >= 0)
-            has_layer_group = any(isinstance(g, int) and g >= 0 for g in current_groups)
-            # Check if current shard contains any non-layer groups (str, i.e. module names)
-            has_nonlayer_group = any(isinstance(g, str) for g in current_groups)
-
-            if group >= 0 and group not in current_groups:
-                # Real layer group that is not yet in the current shard
-                if len(current_groups) >= max_layers_per_shard:
+            if layer_idx is not None:
+                # ── Layer param ──────────────────────────────────────────
+                if current_modules:
+                    # Non-layer → layer transition (sort order guarantees
+                    # this is the first layer param after non-layer block)
                     new_shard = True
-                elif has_nonlayer_group:
-                    # Cannot mix real layer with non-layer tensors
-                    new_shard = True
-            elif group == -1 and len(current_groups) > 0:
-                # Non-layer tensors: check if this is a different module family
-                # We allow multiple non-layer tensors from the SAME module
-                # (e.g. embed_tokens.weight + embed_tokens.bias) in one shard,
-                # but do NOT mix different modules (e.g. embed_tokens + lm_head).
-                if has_layer_group:
-                    # Cannot mix non-layer with real layer tensors
-                    new_shard = True
-                elif module not in current_groups:
-                    # Different non-layer module family (e.g. embed_tokens vs lm_head)
-                    new_shard = True
-
-        if not new_shard and current_bytes + output_nbytes > target_shard_size and current_bytes > 0:
-            # Non-layer params: only split if this is a different module family.
-            # Same module's tensors stay together even if they exceed target size.
-            if group == -1:
-                if module not in current_groups:
+                elif layer_idx not in current_layers and len(current_layers) >= max_layers_per_shard:
+                    # Adding a new layer would exceed the per-shard limit
                     new_shard = True
             else:
-                new_shard = True
+                # ── Non-layer param ───────────────────────────────────────
+                assert module is not None
+                if current_layers:
+                    # Layer → non-layer transition (rare, but handle it)
+                    new_shard = True
+                elif module not in current_modules and current_modules:
+                    # Different non-layer module family
+                    new_shard = True
 
+        # ── Size-based splitting ──────────────────────────────────────────
+        if not new_shard and current_bytes + output_nbytes > target_shard_size and current_bytes > 0:
+            if layer_idx is not None:
+                new_shard = True       # layer params: obey size limit
+            elif module is not None and module not in current_modules:
+                new_shard = True       # non-layer: split on module change only
+            # else: same non-layer module — stay together, exceed size limit
+
+        # ── Apply ─────────────────────────────────────────────────────────
         if new_shard:
             current_shard += 1
             current_bytes = 0
-            current_groups = set()
+            current_layers = set()
+            current_modules = set()
 
         assignments[current_shard].append(
             (input_shard, input_key, output_key, action))
         current_bytes += output_nbytes
-        # Use module name for non-layer groups so that _module_group is the
-        # grouping key (embed_tokens, lm_head, norm, etc.)
-        current_groups.add(module if group == -1 else group)
+        if layer_idx is not None:
+            current_layers.add(layer_idx)
+        else:
+            current_modules.add(module)
         total_bytes += output_nbytes
 
     num_shards = current_shard + 1 if assignments else 0

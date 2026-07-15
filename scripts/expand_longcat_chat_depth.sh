@@ -24,7 +24,7 @@ EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_depth.py"
 
 MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/LongCat-Flash-Chat}"
 OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-depth32}"
-TARGET_LAYERS="${TARGET_LAYERS:-32}"
+TARGET_LAYERS="${TARGET_LAYERS:-}"
 COPY_SOURCE="${COPY_SOURCE:-7,14,21,27}"
 INSERTION_MODE="${INSERTION_MODE:-interleave}"
 WORKERS="${WORKERS:-4}"
@@ -40,6 +40,8 @@ import json
 c = json.load(open('${MODEL_DIR}/config.json'))
 print(c.get('num_layers', c.get('num_hidden_layers', 0)))
 ")
+# Default: +4 identity layers; if TARGET_LAYERS is set it overrides
+TARGET_LAYERS="${TARGET_LAYERS:-$((ORIG_LAYERS + 4))}"
 
 echo "=== LongCat-Flash-Chat Depth Expansion (M2) ==="
 echo "  Input:   $MODEL_DIR"
@@ -51,10 +53,10 @@ echo "  Source:  ${COPY_SOURCE:-seq}"
 CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
     --model_dir "$MODEL_DIR"
     --output_dir "$OUTPUT_DIR"
-    --target_layers "$TARGET_LAYERS"
     --insertion_mode "$INSERTION_MODE"
 )
 
+[[ -n "$TARGET_LAYERS" ]] && CMD+=(--target_layers "$TARGET_LAYERS")
 [[ -n "$COPY_SOURCE" ]] && CMD+=(--copy_source "$COPY_SOURCE")
 [[ -n "$WORKERS" ]] && CMD+=(--workers "$WORKERS")
 [[ -n "$MAX_LAYERS_PER_SHARD" ]] && CMD+=(--max_layers_per_shard "$MAX_LAYERS_PER_SHARD")

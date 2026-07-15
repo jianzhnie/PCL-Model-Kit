@@ -29,7 +29,7 @@ EXPAND_SCRIPT="$PROJECT_ROOT/utils/expand_moe_combined.py"
 
 MODEL_DIR="${MODEL_DIR:-/home/jianzhnie/llmtuner/hfhub/models/meituan-longcat/LongCat-Flash-Chat}"
 OUTPUT_DIR="${OUTPUT_DIR:-/home/jianzhnie/llmtuner/hfhub/cache/LongCat-Flash-Chat-combined}"
-TARGET_LAYERS="${TARGET_LAYERS:-32}"
+TARGET_LAYERS="${TARGET_LAYERS:-}"
 TARGET_EXPERTS="${TARGET_EXPERTS:-}"
 EXPERT_EXPANSION_FACTOR="${EXPERT_EXPANSION_FACTOR:-2}"
 COPY_SOURCE="${COPY_SOURCE:-7,14,21,27}"
@@ -54,6 +54,8 @@ import json
 c = json.load(open('${MODEL_DIR}/config.json'))
 print(c.get('num_layers', c.get('num_hidden_layers', 0)))
 ")
+# Default: +4 identity layers; if TARGET_LAYERS is set it overrides
+TARGET_LAYERS="${TARGET_LAYERS:-$((ORIG_LAYERS + 4))}"
 ACTUAL_TARGET_EXPERTS="${TARGET_EXPERTS:-$((ORIG_EXPERTS * EXPERT_EXPANSION_FACTOR))}"
 EXPANSION_FACTOR=$(python3 -c "
 n = ${ACTUAL_TARGET_EXPERTS} / ${ORIG_EXPERTS}
@@ -73,9 +75,10 @@ CMD=(env PYTHONPATH="$PROJECT_ROOT" python3 "$EXPAND_SCRIPT"
     --model_dir "$MODEL_DIR"
     --output_dir "$OUTPUT_DIR"
     --insertion_mode "$INSERTION_MODE"
-    --target_layers "$TARGET_LAYERS"
     --target_experts "$ACTUAL_TARGET_EXPERTS"
 )
+
+[[ -n "$TARGET_LAYERS" ]] && CMD+=(--target_layers "$TARGET_LAYERS")
 
 [[ -n "$COPY_SOURCE" ]] && CMD+=(--copy_source "$COPY_SOURCE")
 [[ -n "$TARGET_TOPK" ]] && CMD+=(--target_topk "$TARGET_TOPK")
