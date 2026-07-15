@@ -55,9 +55,26 @@ def _patch_longcat_ngram():
         def _patched_ccm(*args, **kwargs):
             # Move positional-only params from kwargs to positional args
             pos_args = list(args)
-            for pname in _pos_only:
-                if len(pos_args) <= _pos_only.index(pname) and pname in kwargs:
-                    pos_args.append(kwargs.pop(pname))
+            for i, pname in enumerate(_pos_only):
+                if len(pos_args) <= i:
+                    if pname in kwargs:
+                        pos_args.append(kwargs.pop(pname))
+                    else:
+                        # No value provided — use default or None
+                        default = _ccm_params[pname].default
+                        pos_args.append(default if default is not inspect.Parameter.empty else None)
+            # Fix naming mismatches between cached model code and installed
+            # transformers version (e.g. input_embeds vs inputs_embeds).
+            _name_aliases = {"input_embeds": "inputs_embeds"}
+            for old_name, new_name in _name_aliases.items():
+                if old_name in kwargs and new_name not in kwargs:
+                    kwargs[new_name] = kwargs.pop(old_name)
+            # Fill in missing required kwargs with None
+            # (cached model code may not pass params added in newer transformers)
+            for pname, param in _ccm_params.items():
+                if pname not in kwargs and pname not in _pos_only:
+                    if param.default is inspect.Parameter.empty:
+                        kwargs[pname] = None
             # Filter to only kwargs the function actually accepts
             filtered = {k: v for k, v in kwargs.items() if k in _ccm_names}
             return _orig_ccm(*pos_args, **filtered)
