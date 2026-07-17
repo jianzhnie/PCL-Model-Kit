@@ -41,6 +41,7 @@ from utils.shared import (
     auto_detect_shard_size,
     build_expert_target_map,
     build_layer_mapping,
+    compute_optimal_shard_size,
     expand_router_bias,
     expand_router_weight,
     find_expert_count,
@@ -495,6 +496,10 @@ def main():
     parser.add_argument("--max_layers_per_shard", type=int, default=1,
                         help="Maximum number of layers per output safetensors "
                              "file (default 1). 1 = one layer per file.")
+    parser.add_argument("--target_shard_size", type=int, default=None,
+                        help="Target shard size in bytes (default: auto-compute "
+                             "optimal size based on model expansion factors). "
+                             "Use this to override the computed shard size.")
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -620,6 +625,18 @@ def main():
     print("Config written.")
 
     target_shard_size = auto_detect_shard_size(model_dir, shard_files)
+    if args.target_shard_size is not None:
+        target_shard_size = args.target_shard_size
+        print(f"Overriding target shard size: {target_shard_size / 1e9:.2f} GB")
+    else:
+        # Auto-compute optimal shard size based on expansion factors
+        target_shard_size = compute_optimal_shard_size(
+            model_dir, shard_files, config,
+            target_layers=target_layers,
+            target_experts=target_experts,
+            max_layers_per_shard=args.max_layers_per_shard,
+            ideal_shards_per_layer=3,
+        )
     print(f"Target shard size: {target_shard_size / 1e9:.2f} GB")
 
     workers = args.workers if args.workers > 0 else (__import__("os").cpu_count() or 4)

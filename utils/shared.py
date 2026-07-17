@@ -8,7 +8,16 @@ from pathlib import Path
 import torch
 
 # ── Pre-compiled regex patterns (hot-path: called for every tensor key) ──
-_LAYER_INDEX_RE = re.compile(r"model\.layers\.(\d+)\.")
+# Support multiple common layer naming conventions across HF model families:
+#   - model.layers.N.* (Llama, Qwen, Mistral, LongCat, etc.)
+#   - transformer.h.N.* (GPT-2, GPT-Neo, etc.)
+#   - model.decoder.layers.N.* (BART, T5, etc.)
+#   - encoder.layer.N.* (BERT, RoBERTa, etc.)
+#   - transformer.blocks.N.* (MPT, etc.)
+_LAYER_INDEX_RE = re.compile(
+    r"(?:model\.layers\.|transformer\.h\.|model\.decoder\.layers\.|encoder\.layer\.|transformer\.blocks\.)"
+    r"(\d+)\."
+)
 _EXPERT_INFO_RE = re.compile(r"model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.(.*)")
 _LAYER_PREFIX = "model.layers."
 
@@ -24,6 +33,7 @@ DTYPE_SIZES: dict[str, int] = {
 }
 
 EXPERT_COUNT_KEYS = ["n_routed_experts", "n_experts", "num_experts"]
+LAYER_COUNT_KEYS = ["num_layers", "num_hidden_layers", "n_layers", "n_layer"]
 
 ROUTER_WEIGHT_SUFFIXES = (
     "mlp.router.classifier.weight",
@@ -49,7 +59,29 @@ def load_index(model_dir: Path) -> dict | None:
     if index_path.exists():
         with open(index_path) as f:
             return json.load(f)
+    # Support single-file models (no index, just model.safetensors)
+    single_path = model_dir / "model.safetensors"
+    if single_path.exists():
+        # Build a synthetic index
+        return {
+            "metadata": {"total_size": single_path.stat().st_size},
+            "weight_map": {},  # will be populated from header scan
+        }
     return None
+
+
+def get_shard_files(model_dir: Path, index: dict | None) -> list[str]:
+    """Get list of shard files from index, or single file for non-sharded models."""
+    if index is None:
+        return []
+    weight_map = index.get("weight_map", {})
+    if weight_map:
+        return sorted(set(weight_map.values()))
+    # Single-file model: synthetic index
+    single = model_dir / "model.safetensors"
+    if single.exists():
+        return ["model.safetensors"]
+    return []
 
 
 def get_layer_index(param_name: str) -> int | None:
@@ -60,18 +92,38 @@ def get_layer_index(param_name: str) -> int | None:
     return None
 
 
+# Supported layer prefixes for set_layer_index (order matters for matching)
+_LAYER_PREFIXES = [
+    "model.layers.",
+    "transformer.h.",
+    "model.decoder.layers.",
+    "encoder.layer.",
+    "transformer.blocks.",
+]
+
+
+def _find_layer_prefix(param_name: str) -> str | None:
+    """Find which layer prefix a parameter name uses."""
+    for prefix in _LAYER_PREFIXES:
+        if param_name.startswith(prefix):
+            return prefix
+    return None
+
+
 def set_layer_index(param_name: str, new_index: int) -> str:
     """Change the layer index in a parameter name.
 
+    Supports multiple common layer naming conventions.
     Uses string split/join (~4× faster than re.sub for this simple pattern).
     """
-    if not param_name.startswith(_LAYER_PREFIX):
+    prefix = _find_layer_prefix(param_name)
+    if prefix is None:
         return param_name
-    rest = param_name[len(_LAYER_PREFIX):]  # strip "model.layers."
+    rest = param_name[len(prefix):]  # strip prefix
     dot_pos = rest.find(".")
     if dot_pos == -1:
         return param_name
-    return f"{_LAYER_PREFIX}{new_index}.{rest[dot_pos + 1:]}"
+    return f"{prefix}{new_index}.{rest[dot_pos + 1:]}"
 
 
 def get_expert_info(param_name: str) -> tuple[int, int, str] | None:
@@ -209,6 +261,225 @@ def auto_detect_shard_size(model_dir: Path, shard_files: list[str]) -> int:
     print("WARNING: No shard files found on disk. Using default 8GB target. "
           "Output shards will match this size, not necessarily the originals.")
     return 8 * 1024 ** 3
+
+
+def compute_optimal_shard_size(
+    model_dir: Path,
+    shard_files: list[str],
+    config: dict,
+    target_layers: int,
+    target_experts: int,
+    max_layers_per_shard: int = 1,
+    ideal_shards_per_layer: int = 3,
+) -> int:
+    """Compute an optimal target shard size for expanded model layout.
+
+    The goal is to minimize layer dispersion (number of shards a single layer
+    spans) while keeping shard sizes uniform. This is done by:
+
+    1. Scanning the original model headers to estimate per-layer data size
+    2. Accounting for expansion factors (depth + experts)
+    3. Computing a target size that yields ~ideal_shards_per_layer shards per layer
+
+    Returns the computed target shard size in bytes.
+    """
+    from collections import defaultdict
+
+    # ── Step 1: accumulate original tensor sizes by layer ──────────────────
+    layer_bytes: dict[int, int] = defaultdict(int)
+    non_layer_bytes: dict[str, int] = defaultdict(int)
+    expert_bytes: dict[int, int] = defaultdict(int)
+    other_layer_bytes: dict[int, int] = defaultdict(int)
+
+    for fname in shard_files:
+        fpath = model_dir / fname
+        if not fpath.exists():
+            continue
+        header = read_safetensors_header(fpath)
+        for key, (dtype, shape) in header.items():
+            nbytes = get_nbytes_from_meta(dtype, shape)
+            layer_idx = get_layer_index(key)
+            if layer_idx is not None:
+                layer_bytes[layer_idx] += nbytes
+                if "mlp.experts" in key:
+                    expert_bytes[layer_idx] += nbytes
+                else:
+                    other_layer_bytes[layer_idx] += nbytes
+            else:
+                # Group non-layer by module family
+                module = _module_group(key)
+                non_layer_bytes[module] += nbytes
+
+    if not layer_bytes:
+        print("WARNING: Could not estimate layer sizes. Using auto-detected shard size.")
+        return auto_detect_shard_size(model_dir, shard_files)
+
+    # ── Step 2: estimate expanded layer size ─────────────────────────────
+    # Try multiple common layer count keys for different model families
+    original_layers = 0
+    for key in LAYER_COUNT_KEYS:
+        if key in config and config[key] is not None:
+            original_layers = config[key]
+            break
+    if original_layers == 0:
+        original_layers = max(layer_bytes.keys()) + 1  # fallback from tensor keys
+
+    # Try multiple common expert count keys for different model families
+    original_experts = 0
+    for key in EXPERT_COUNT_KEYS:
+        if key in config and config[key] is not None:
+            original_experts = config[key]
+            break
+
+    # Detect if this is actually a dense model (no expert weights found in tensors)
+    total_expert = sum(expert_bytes.values())
+    if original_experts == 0 and total_expert == 0:
+        # Dense model: no experts, no expansion factor
+        original_experts = 0
+    elif original_experts == 0:
+        # Model has expert weights but config missing key — fallback
+        original_experts = 512
+
+    # Handle single-expansion mode (depth-only or expert-only)
+    # target_layers=0 means no depth expansion (expert-only)
+    # target_experts=0 means no expert expansion (depth-only)
+    if target_layers == 0:
+        target_layers = original_layers
+    if target_experts == 0:
+        target_experts = original_experts
+
+    # For dense models (no experts), expansion_factor is always 1.0 (no expert scaling)
+    expansion_factor = target_experts / original_experts if original_experts > 0 else 1.0
+    depth_factor = target_layers / original_layers
+
+    # Calculate actual expert fraction from original model
+    total_other = sum(other_layer_bytes.values())
+    total_layer = total_expert + total_other
+
+    if total_layer > 0:
+        expert_fraction = total_expert / total_layer
+    else:
+        expert_fraction = 0.6  # fallback
+
+    avg_layer_size = total_layer / len(layer_bytes)
+
+    # After expansion:
+    # - Expert weights scale by expansion_factor
+    # - Other layer params (attention, norm, mlps) scale by depth_factor
+    # - Router weights also scale by expansion_factor (dim0 expands)
+    expanded_layer_size = avg_layer_size * (
+        expert_fraction * expansion_factor + (1 - expert_fraction) * depth_factor
+    )
+
+    # Add a small safety margin for rounding and edge cases
+    expanded_layer_size *= 1.02
+
+    # ── Step 3: compute target shard size ────────────────────────────────
+    # Compute original average shard size and total for reference
+    original_avg_shard_size = 0
+    original_total_size = 0
+    if shard_files:
+        sizes = [(model_dir / f).stat().st_size for f in shard_files if (model_dir / f).exists()]
+        if sizes:
+            original_avg_shard_size = int(sum(sizes) / len(sizes))
+            original_total_size = sum(sizes)
+
+    # Estimate original layers per shard from tensor data (not file sizes, which include overhead)
+    if avg_layer_size > 0:
+        original_layers_per_shard_data = original_avg_shard_size / avg_layer_size
+    else:
+        original_layers_per_shard_data = 1
+
+    # Determine target number of output shards.
+    # Goal: output shard count should be roughly proportional to model size increase,
+    # while respecting practical limits on shard size.
+    # Formula: target_shards ≈ original_shards × (expanded_size / original_size)
+    #         = original_shards × (expanded_layer_size / avg_layer_size) × (target_layers / original_layers)
+    # Simplified: target_shards ≈ original_shards × depth_factor × expansion_factor (for MoE)
+    original_num_shards = len(shard_files)
+    if original_num_shards > 0 and avg_layer_size > 0 and original_layers > 0:
+        # Estimate how many shards the expanded model should have
+        size_ratio = (expanded_layer_size / avg_layer_size) * (target_layers / original_layers)
+        target_num_shards = max(1, int(original_num_shards * size_ratio))
+    else:
+        target_num_shards = max(1, target_layers)  # fallback: 1 shard per layer
+
+    # Compute target size from desired shard count
+    # Total expanded size = expanded_layer_size × target_layers + non_layer_bytes
+    total_non_layer = sum(non_layer_bytes.values())
+    # Non-layer params scale by depth_factor (embeddings, lm_head, etc.)
+    expanded_non_layer = int(total_non_layer * depth_factor)
+    total_expanded_size = int(expanded_layer_size * target_layers) + expanded_non_layer
+
+    target_size = int(total_expanded_size / target_num_shards)
+
+    # Round to a nice value for readability.
+    if target_size < 5 * 1024 ** 3:  # < 5 GB
+        rounding_unit = 100 * 1024 * 1024  # 0.1 GB
+    else:
+        rounding_unit = 512 * 1024 * 1024  # 0.5 GB
+    target_size = ((target_size + rounding_unit // 2) // rounding_unit) * rounding_unit
+
+    # Apply max_layers_per_shard constraint with anti-fragmentation guard.
+    # If respecting max_layers_per_shard would produce too many tiny shards
+    # (more than 2x original shard count), we relax the constraint to prevent
+    # excessive fragmentation.
+    max_size_for_layers = int(expanded_layer_size * max_layers_per_shard)
+    if target_size > max_size_for_layers and max_layers_per_shard > 0:
+        # Check if applying this constraint would cause shard explosion
+        projected_shards = max(1, int(total_expanded_size / max_size_for_layers))
+        if projected_shards > original_num_shards * 2 and original_num_shards > 1:
+            # Too many shards would be created — relax constraint to keep shard count reasonable
+            # But for no-expansion cases (size_ratio ≈ 1), prefer keeping original shard count
+            if abs(size_ratio - 1.0) < 0.1:
+                # No significant expansion: keep original number of shards
+                relaxed_target = int(total_expanded_size / original_num_shards)
+                print(f"  NOTE: No expansion detected, keeping original {original_num_shards} shards (~{relaxed_target / 1e9:.2f} GB each)")
+            else:
+                relaxed_target = int(total_expanded_size / (original_num_shards * 2))
+                print(f"  NOTE: Relaxed max_layers_per_shard to avoid {projected_shards} shards (limit: {original_num_shards * 2}, ~{relaxed_target / 1e9:.2f} GB each)")
+            relaxed_target = ((relaxed_target + rounding_unit // 2) // rounding_unit) * rounding_unit
+            relaxed_target = max(max_size_for_layers, relaxed_target)
+            target_size = min(target_size, relaxed_target)
+        else:
+            target_size = max_size_for_layers
+            target_size = ((target_size + rounding_unit // 2) // rounding_unit) * rounding_unit
+            print(f"  NOTE: Limited by max_layers_per_shard={max_layers_per_shard} to {target_size / 1e9:.2f} GB")
+
+    # Minimum shard size: at least 0.1 GB, or if single-file, use file size
+    single_file_size = 0
+    if len(shard_files) == 1:
+        sf_path = model_dir / shard_files[0]
+        if sf_path.exists():
+            single_file_size = sf_path.stat().st_size
+    min_shard_size = max(
+        100 * 1024 * 1024,  # 0.1 GB absolute minimum
+        single_file_size if single_file_size > 0 else 0,
+    )
+
+    # Hard bounds: 0.1 GB ~ 50 GB per shard
+    max_shard_size = 50 * 1024 ** 3
+
+    if target_size > max_shard_size:
+        target_size = max_shard_size
+        target_size = ((target_size + rounding_unit // 2) // rounding_unit) * rounding_unit
+        print(f"  NOTE: Capped at 50 GB max shard size")
+
+    target_size = max(min_shard_size, min(max_shard_size, target_size))
+
+    # Compute final shards per layer for reporting
+    adjusted_shards = max(1, int(expanded_layer_size / target_size))
+
+    print(f"\nOptimal shard size estimation:")
+    print(f"  Original layers: {original_layers}, target layers: {target_layers}")
+    print(f"  Original experts: {original_experts}, target experts: {target_experts}")
+    print(f"  Expansion factor: {expansion_factor:.1f}x experts, {depth_factor:.1f}x depth")
+    print(f"  Expert fraction: {expert_fraction*100:.1f}%")
+    print(f"  Estimated layer size: {expanded_layer_size / 1e9:.2f} GB")
+    print(f"  Target shards per layer: {adjusted_shards}")
+    print(f"  Computed target shard size: {target_size / 1e9:.2f} GB")
+
+    return target_size
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -378,9 +649,30 @@ def _module_group(key: str) -> str:
     return key
 
 
-def layer_sort_key(output_key: str) -> tuple[int, str]:
-    """Sort key for layer-aware ordering: non-layer first, then by layer, then by name."""
-    return (_layer_group(output_key), output_key)
+def layer_sort_key(output_key: str) -> tuple[int, str, str]:
+    """Sort key for layer-aware ordering: non-layer first, then by layer, then by module, then by name.
+
+    For layer params, groups by layer index first, then by top-level module
+    (self_attn, mlp, input_layernorm, etc.) to keep each layer's params
+    tightly packed and avoid interleaving different modules across shards.
+    """
+    group = _layer_group(output_key)
+    if group == -1:
+        # Non-layer params: sort by module group, then by full key
+        return (-1, _module_group(output_key), output_key)
+    # Layer params: sort by layer index, then by module prefix, then by key
+    # Extract module prefix (e.g. "self_attn", "mlp", "input_layernorm")
+    module_prefix = ""
+    if "model.layers." in output_key:
+        # Strip "model.layers.N." to get the rest
+        rest = output_key.split("model.layers.", 1)[1]
+        # The first component after the layer number is the module prefix
+        dot_pos = rest.find(".")
+        if dot_pos != -1:
+            module_prefix = rest[:dot_pos]
+        else:
+            module_prefix = rest
+    return (group, module_prefix, output_key)
 
 
 def assign_shards_layer_aware(
@@ -469,7 +761,12 @@ def assign_shards_layer_aware(
         # ── Size-based splitting ──────────────────────────────────────────
         if not new_shard and current_bytes + output_nbytes > target_shard_size and current_bytes > 0:
             if layer_idx is not None:
-                new_shard = True       # layer params: strictly obey size limit
+                # Layer params: prefer to keep the entire layer together.
+                # Only split if adding this tensor would push us well beyond
+                # the target (1.5×) — this prevents tiny leftover shards when
+                # a layer barely exceeds the target.
+                if current_bytes + output_nbytes > int(target_shard_size * 1.5):
+                    new_shard = True
             else:
                 # Non-layer: same module stays together, but cap at 1.5×
                 # target to avoid single giant shards when the module has

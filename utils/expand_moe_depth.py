@@ -40,6 +40,7 @@ from utils.shared import (
     assign_shards_layer_aware,
     auto_detect_shard_size,
     build_layer_mapping,
+    compute_optimal_shard_size,
     get_layer_index,
     get_nbytes_from_meta,
     layer_sort_key,
@@ -213,6 +214,10 @@ def main():
                         help="Maximum number of layers to pack into a single "
                              "output safetensors file (default 1). "
                              "1 = one layer per file, 2-3 for smaller models.")
+    parser.add_argument("--target_shard_size", type=int, default=None,
+                        help="Target shard size in bytes (default: auto-compute "
+                             "optimal size based on model expansion factors). "
+                             "Use this to override the computed shard size.")
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir).resolve()
@@ -293,6 +298,19 @@ def main():
             remap[src] = new_idx
 
     target_size_bytes = auto_detect_shard_size(model_dir, shard_files)
+    if args.target_shard_size is not None:
+        target_size_bytes = args.target_shard_size
+        print(f"Overriding target shard size: {target_size_bytes / 1e9:.2f} GB")
+    else:
+        # Auto-compute optimal shard size based on expansion factors
+        # For depth-only expansion, target_experts = 0 (no expert expansion)
+        target_size_bytes = compute_optimal_shard_size(
+            model_dir, shard_files, config,
+            target_layers=target_layers,
+            target_experts=0,  # 0 means no expert expansion, use original expert count
+            max_layers_per_shard=args.max_layers_per_shard,
+            ideal_shards_per_layer=3,
+        )
     print(f"Target shard size: {target_size_bytes / 1e9:.2f} GB")
 
     workers = args.workers if args.workers > 0 else (__import__("os").cpu_count() or 4)
