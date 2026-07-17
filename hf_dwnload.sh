@@ -12,6 +12,7 @@ hf download Qwen/Qwen3-0.6B --local-dir ~/hfhub/models/Qwen/Qwen3-0.6B
 hf download deepseek-ai/DeepSeek-V3-Base --local-dir ~/hfhub/models/deepseek-ai/DeepSeek-V3-Base --exclude "*.safetensors"
 hf download moonshotai/Kimi-K2-Base --local-dir ~/hfhub/models/moonshotai/Kimi-K2-Base --exclude "*.safetensors"
 hf download Qwen/Qwen3-32B --local-dir ~/hfhub/models/Qwen/Qwen3-32B --exclude "*.safetensors"
+hf download Qwen/Qwen3-30B-A3B --local-dir ~/hfhub/models/Qwen/Qwen3-30B-A3B --exclude "*.safetensors"
 
 ## ModelScope 模型下载
 # modelscope download --model 'LLM-Research/Meta-Llama-3.1-405B' --include '*.json' --local_dir ~/hfhub/models/LLM-Research/Meta-Llama-3.1-405B
