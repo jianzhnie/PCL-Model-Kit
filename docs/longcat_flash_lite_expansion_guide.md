@@ -593,7 +593,20 @@ MAX_LAYERS_PER_SHARD=2 bash scripts/expand_longcat_lite_combined.sh
    子层 4:  x = x + 0 + shortcut = x + shortcut ≠ x             ← 非恒等!
    ```
 
-   快捷连接从子层 2 提取 MoE 输出，跨越子层 3 后注入子层 4。即使将新层的所有 `o_proj` 和 `down_proj` 置零，子层 2 的 MoE 路由计算仍会产生非零的 `shortcut` 值——因为 Router 自身的分类器权重并未置零，且路由后的 expert 加权求和即使每个 expert 的 `down_proj=0` 输出为零，Router 本身的计算路径（`classifier` → `topk` → `gate` → `softmax`）并不经过被置零的参数。
+   快捷连接从子层 2 提取 MoE 输出，跨越子层 3 后注入子层 4。即使将新层的所有 `o_proj` 和 `down_proj` 置零，子层 2 的 MoE 输出仍为非零——**关键原因在于 zero expert 的 identity 特性**：
+
+   1. **Routed experts (0-511)**: `down_proj = 0` → expert 输出 = 0 ✓
+   2. **Zero experts (512-767, identity 类型)**: 不经过任何线性变换，输出直接等于输入（即 `expert_output = expert_input`），**完全绕过了 `down_proj`** → 输出 ≠ 0 ✗
+
+   Router 从全部 768 个 expert 中选取 top-12，其中包含 zero expert。这些 zero expert 将其恒等输出（`LN₁(x)`）以 Router 权重加权后贡献给 MoE 输出：
+
+   ```
+   shortcut = MoE(LN₁(x))
+            = Σ routed_experts(w_i × 0) + Σ zero_experts(w_j × LN₁(x))
+            = α × LN₁(x)   (其中 α = 被选中 zero expert 的权重之和, α ≠ 0)
+   ```
+
+   子层 4 最终：`x = x + 0 + shortcut = x + α × LN₁(x) ≠ x` ← 非恒等!
 
    **影响**：
    - `verify_expanded_weights.py`（权重结构检查）**通过**——所有置零参数确实为零
@@ -601,4 +614,8 @@ MAX_LAYERS_PER_SHARD=2 bash scripts/expand_longcat_lite_combined.sh
    - 误差随恒等层数量**线性累积**（每层贡献约 2–3 的 max_abs_diff）
    - `cos_sim` 保持在高位（0.96–0.99），输出方向高度相关，可用于训练初始化
 
-   **适用场景**：尽管不是严格函数保持，扩展模型仍可用于后续训练——恒等层的输出与输入高度相关（cos_sim > 0.96），可作为良好的初始化起点。若需要严格函数保持的深度扩展，需针对 LongCat 架构修改恒等初始化逻辑（同时将 shortcut 路径中的 MoE Router 输出也归零，或重构残差连接）。
+   **适用场景**：尽管不是严格函数保持，扩展模型仍可用于后续训练——恒等层的输出与输入高度相关（cos_sim > 0.96），可作为良好的初始化起点。
+
+   **若需要严格函数保持的深度扩展**，可选方案：
+   1. 将恒等层中 Router 的 zero expert 路由权重置零，使 Router 仅选择 routed expert（其 `down_proj=0` 输出为零），从而 `shortcut = 0`
+   2. 或重构残差连接，将 shortcut 注入点移到恒等层的 MLP 计算之前而非之后，使其不再跨越子层

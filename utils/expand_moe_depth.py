@@ -5,11 +5,16 @@ MoE Depth Expansion (M2): Insert identity-initialized MoE layers.
 Implements the "MoE 层深度扩展" strategy from llm_param_expansion.md:
 - Copies existing MoE layers to create new layers
 - Zeros out o_proj weights (attention output → zero)
-- Zeros out down_proj weights in ALL experts and shared MLPs
-- Result: new layers satisfy Layer(x) ≈ x via residual connection
+- Zeros out down_proj weights in ALL routed experts and shared MLPs
+- Result: new layers approximate Layer(x) ≈ x via residual connection
 
-This is function-preserving: the expanded model produces identical outputs
-to the original model at initialization.
+NOTE: For standard Transformer architectures (single attention + single FFN
+per layer), this method is strictly function-preserving. However, for
+LongCat-Flash architecture with dual attention heads + dual MLPs + shortcut
+connections, the zero (identity-type) experts bypass the down_proj zeroing
+and produce non-zero shortcut values. This makes the identity initialization
+approximate rather than exact. See docs/longcat_flash_chat_expansion_guide.md
+Section 8, item 6 for details.
 
 Usage:
   python expand_moe_depth.py \
